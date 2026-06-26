@@ -505,15 +505,35 @@ app.get('/api/admin/sales-reps/:id/dashboard', authenticate, authorize('admin', 
   }
 });
 
-// Get sales rep last check-in location for today (for admin/manager viewing)
+// Get sales rep last check-in or live location for today (for admin/manager viewing)
 app.get('/api/admin/sales-reps/:id/location', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const repId = parseInt(req.params.id, 10);
   
   if (!pool) {
-    return res.json({ latitude: -6.2088, longitude: 106.8456, last_update: new Date().toISOString() });
+    return res.json({ latitude: -6.2088, longitude: 106.8456, last_update: new Date().toISOString(), is_live: true });
   }
 
   try {
+    // 1. Cek live location terupdate hari ini
+    const liveResult = await pool.query(
+      `SELECT last_lat as latitude, last_lng as longitude, last_location_update as last_update
+       FROM employee
+       WHERE employee_id = $1 
+         AND last_location_update::date = CURRENT_DATE 
+         AND last_lat IS NOT NULL`,
+      [repId]
+    );
+
+    if (liveResult.rows.length > 0 && liveResult.rows[0].latitude !== null) {
+      return res.json({
+        latitude: parseFloat(liveResult.rows[0].latitude),
+        longitude: parseFloat(liveResult.rows[0].longitude),
+        last_update: liveResult.rows[0].last_update,
+        is_live: true
+      });
+    }
+
+    // 2. Fallback: lokasi check-in kunjungan hari ini
     const result = await pool.query(
       `SELECT check_in_lat as latitude, check_in_lng as longitude, check_in_time as last_update
        FROM visit
@@ -523,13 +543,14 @@ app.get('/api/admin/sales-reps/:id/location', authenticate, authorize('admin', '
     );
 
     if (result.rows.length === 0) {
-      return res.json({ latitude: null, longitude: null, last_update: null });
+      return res.json({ latitude: null, longitude: null, last_update: null, is_live: false });
     }
     
     res.json({
       latitude: parseFloat(result.rows[0].latitude),
       longitude: parseFloat(result.rows[0].longitude),
-      last_update: result.rows[0].last_update
+      last_update: result.rows[0].last_update,
+      is_live: false
     });
   } catch (err) {
     console.error('Error fetching sales rep location:', err);
@@ -1243,10 +1264,31 @@ app.put('/api/outlets/:id', authenticate, authorize('admin', 'manager'), async (
 });
 
 app.delete('/api/outlets/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  const outletId = parseInt(req.params.id, 10);
+  
+  if (!pool) {
+    // Mock mode: simulasikan penghapusan
+    return res.json({ success: true, message: 'Outlet deactivated (mock)' });
+  }
+  
   try {
-    await pool.query(`UPDATE outlet SET is_active = false WHERE outlet_id = $1`, [req.params.id]);
+    // Soft-delete outlet
+    await pool.query(
+      `UPDATE outlet SET is_active = false WHERE outlet_id = $1`,
+      [outletId]
+    );
+    // Nonaktifkan semua assignment sales ke outlet ini
+    // supaya sales tidak lagi melihat outlet yang sudah dihapus
+    const ready = await tablesReady();
+    if (ready.assignment) {
+      await pool.query(
+        `UPDATE outlet_assignment SET is_active = false WHERE outlet_id = $1`,
+        [outletId]
+      );
+    }
     res.json({ success: true });
   } catch (err) {
+    console.error('Error deleting outlet:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1723,17 +1765,16 @@ app.get('/api/admin/sales-reps/:id/stock/download-template', authenticate, autho
         ORDER BY product_name
       `);
       
+      // Template menggunakan kolom yang mudah diisi user
       templateData = products.rows.map(p => ({
+        nama_barang: p.product_name,
         product_code: p.product_code,
-        product_name: p.product_name,
-        distributor_stock: 0,
-        van_stock: 0,
-        outlet_stock: 0,
-        notes: 'Isi dengan angka stok'
+        total_barang: 0,
+        keterangan: 'Isi kolom total_barang dengan jumlah stok'
       }));
     } else {
       templateData = [
-        { product_code: 'EM-250-RED', product_name: 'EnergiMax Drink 250ml', distributor_stock: 0, van_stock: 0, outlet_stock: 0, notes: 'Isi dengan angka stok' }
+        { nama_barang: 'EnergiMax Drink 250ml', product_code: 'EM-250-RED', total_barang: 0, keterangan: 'Isi kolom total_barang dengan jumlah stok' }
       ];
     }
     
@@ -2151,6 +2192,9 @@ app.post('/api/promotions', authenticate, authorize('admin', 'manager'), async (
 
 app.put('/api/promotions/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const { description, type, conditions, reward, start_date, end_date, is_active } = req.body;
+  if (!pool) {
+    return res.json({ success: true, message: 'Promotion updated (mock)' });
+  }
   try {
     await pool.query(
       `UPDATE promotion SET description=$1, type=$2, conditions=$3, reward=$4, start_date=$5, end_date=$6, is_active=$7
@@ -2168,6 +2212,23 @@ app.put('/api/promotions/:id', authenticate, authorize('admin', 'manager'), asyn
     );
     res.json({ success: true });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Hapus / nonaktifkan promotion
+app.delete('/api/promotions/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  if (!pool) {
+    return res.json({ success: true, message: 'Promotion deleted (mock)' });
+  }
+  try {
+    await pool.query(
+      `UPDATE promotion SET is_active = false WHERE promotion_id = $1`,
+      [req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting promotion:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2450,7 +2511,17 @@ app.get('/api/analytics/daily-sales', authenticate, async (req, res) => {
   const days = parseInt(req.query.days, 10) || 7;
 
   if (!pool) {
-    return res.json([]);
+    // Mock data bermakna: simulasi penjualan 7 hari terakhir
+    const mockData = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      mockData.push({
+        date: d.toISOString().split('T')[0],
+        total_sales: Math.floor(Math.random() * 5000000) + 1000000,
+      });
+    }
+    return res.json(mockData);
   }
 
   try {
@@ -2474,7 +2545,13 @@ app.get('/api/analytics/top-products', authenticate, async (req, res) => {
   const limit = parseInt(req.query.limit, 10) || 5;
 
   if (!pool) {
-    return res.json([]);
+    return res.json([
+      { product_name: 'EnergiMax 250ml', total_quantity: 120, total_sales: 3600000 },
+      { product_name: 'EnergiMax 500ml', total_quantity: 85, total_sales: 4250000 },
+      { product_name: 'IsoPlus Sport', total_quantity: 60, total_sales: 2400000 },
+      { product_name: 'AquaFresh', total_quantity: 45, total_sales: 900000 },
+      { product_name: 'VitaBoost', total_quantity: 30, total_sales: 1500000 },
+    ].slice(0, limit));
   }
 
   try {
@@ -2502,7 +2579,12 @@ app.get('/api/analytics/top-outlets', authenticate, async (req, res) => {
   const limit = parseInt(req.query.limit, 10) || 5;
 
   if (!pool) {
-    return res.json([]);
+    return res.json([
+      { outlet_name: 'Toko Maju Jaya', total_visits: 15, total_sales: 4500000 },
+      { outlet_name: 'Toko Sejahtera', total_visits: 10, total_sales: 3200000 },
+      { outlet_name: 'Toko Makmur Abadi', total_visits: 8, total_sales: 2100000 },
+      { outlet_name: 'Toko Baru Jaya', total_visits: 5, total_sales: 1500000 },
+    ].slice(0, limit));
   }
 
   try {
@@ -2528,11 +2610,12 @@ app.get('/api/analytics/summary', authenticate, async (req, res) => {
   const employeeId = resolveAnalyticsEmployeeId(req);
 
   if (!pool) {
+    // Mock data bermakna
     return res.json({
-      total_sales: 0,
-      total_orders: 0,
-      total_visits: 0,
-      strike_rate: 0,
+      total_sales: 15750000,
+      total_orders: 42,
+      total_visits: 67,
+      strike_rate: 62.7,
     });
   }
 
@@ -2647,6 +2730,35 @@ app.post('/api/visits/checkout', authenticate, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Update live location (for sales rep)
+app.post('/api/visits/location', authenticate, async (req, res) => {
+  const { latitude, longitude } = req.body;
+  const employeeId = req.user.employee_id;
+
+  if (latitude === undefined || longitude === undefined) {
+    return res.status(400).json({ error: 'Latitude and longitude required' });
+  }
+
+  if (!pool) {
+    console.log(`Mock live location update for rep ${employeeId}: ${latitude}, ${longitude}`);
+    return res.json({ success: true, message: 'Location updated (mock)' });
+  }
+
+  try {
+    await pool.query(
+      `UPDATE employee 
+       SET last_lat = $1, last_lng = $2, last_location_update = CURRENT_TIMESTAMP
+       WHERE employee_id = $3`,
+      [latitude, longitude, employeeId]
+    );
+    res.json({ success: true, message: 'Location updated successfully' });
+  } catch (err) {
+    console.error('Error updating live location:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // =====================================================
 // TEAM MANAGEMENT (MANAGER ONLY)

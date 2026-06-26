@@ -996,7 +996,7 @@ app.post('/api/admin/sales-reps/:id/assign-outlet', authenticate, authorize('adm
   }
 });
 
-// Remove outlet from sales rep (update status menjadi Missed)
+// Remove outlet from sales rep (update status menjadi Missed dan deactivate outlet_assignment)
 app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const repId = parseInt(req.params.id);
   const outletId = parseInt(req.params.outlet_id);
@@ -1036,6 +1036,17 @@ app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, a
        RETURNING visit_id, visit_date`,
       [repId, outletId]
     );
+
+    // Deactivate outlet_assignment so sales rep no longer sees this outlet
+    const ready = await tablesReady();
+    if (ready.assignment) {
+      await pool.query(
+        `UPDATE outlet_assignment 
+         SET is_active = false 
+         WHERE employee_id = $1 AND outlet_id = $2`,
+        [repId, outletId]
+      );
+    }
 
     res.json({ 
       success: true, 
@@ -1471,13 +1482,18 @@ app.get('/api/orders', authenticate, async (req, res) => {
 });
 
 app.post('/api/orders', authenticate, async (req, res) => {
-  const { outletId, items, paymentMethod, orderType, promotionId } = req.body;
+  const { outletId, items, paymentMethod, orderType, promotionId, total } = req.body;
   const employeeId = req.user.employee_id;
   const validTypes = ['Sales', 'Pre-order', 'Return', 'FOC'];
   const type = validTypes.includes(orderType) ? orderType : 'Sales';
 
   if (!outletId || !items || items.length === 0) {
     return res.status(400).json({ error: 'Data tidak lengkap' });
+  }
+
+  // Validate items structure
+  if (!items.every(item => item.productId && item.quantity && item.price)) {
+    return res.status(400).json({ error: 'Items structure invalid' });
   }
 
   if (!pool) {
@@ -1525,7 +1541,8 @@ app.post('/api/orders', authenticate, async (req, res) => {
     }
 
     const orderNumber = `SO-${Date.now()}`;
-    let subtotal = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    // Use total from frontend if provided, otherwise calculate from items
+    let subtotal = total && total > 0 ? total : items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
     if (type === 'Return') {
       subtotal = Math.abs(subtotal);
     }
@@ -2150,7 +2167,7 @@ app.get('/api/promotions', authenticate, async (req, res) => {
     return res.json([]);
   }
   try {
-    const activeOnly = req.query.active !== 'false';
+    const activeOnly = req.query.active === 'true';
     let query = `SELECT promotion_id, promotion_code, description, type, conditions, reward, start_date, end_date, is_active
                  FROM promotion`;
     if (activeOnly) {
@@ -2516,9 +2533,16 @@ app.get('/api/analytics/daily-sales', authenticate, async (req, res) => {
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
+      const totalSales = Math.floor(Math.random() * 5000000) + 1000000;
+      const totalOrders = Math.floor(Math.random() * 10) + 1;
+      const totalVisits = Math.floor(Math.random() * 15) + 5;
+      const strikeRate = totalVisits > 0 ? Math.round((totalOrders / totalVisits) * 100) : 0;
       mockData.push({
         date: d.toISOString().split('T')[0],
-        total_sales: Math.floor(Math.random() * 5000000) + 1000000,
+        total_sales: totalSales,
+        total_orders: totalOrders,
+        total_visits: totalVisits,
+        strike_rate: strikeRate,
       });
     }
     return res.json(mockData);
@@ -2526,7 +2550,16 @@ app.get('/api/analytics/daily-sales', authenticate, async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT DATE(so.order_date) as date, COALESCE(SUM(so.total), 0) as total_sales
+      `SELECT 
+         DATE(so.order_date) as date, 
+         COALESCE(SUM(so.total), 0) as total_sales,
+         COUNT(DISTINCT so.order_id) as total_orders,
+         COUNT(DISTINCT v.visit_id) as total_visits,
+         CASE 
+           WHEN COUNT(DISTINCT v.visit_id) > 0 
+           THEN ROUND((COUNT(DISTINCT so.order_id)::numeric / COUNT(DISTINCT v.visit_id)) * 100, 2)
+           ELSE 0 
+         END as strike_rate
        FROM sales_order so
        JOIN visit v ON v.visit_id = so.visit_id
        WHERE v.employee_id = $1 AND v.visit_date >= CURRENT_DATE - ($2 || ' days')::INTERVAL

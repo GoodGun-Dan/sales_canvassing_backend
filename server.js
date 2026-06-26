@@ -505,6 +505,39 @@ app.get('/api/admin/sales-reps/:id/dashboard', authenticate, authorize('admin', 
   }
 });
 
+// Get sales rep last check-in location for today (for admin/manager viewing)
+app.get('/api/admin/sales-reps/:id/location', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  const repId = parseInt(req.params.id, 10);
+  
+  if (!pool) {
+    return res.json({ latitude: -6.2088, longitude: 106.8456, last_update: new Date().toISOString() });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT check_in_lat as latitude, check_in_lng as longitude, check_in_time as last_update
+       FROM visit
+       WHERE employee_id = $1 AND visit_date = CURRENT_DATE AND check_in_lat IS NOT NULL
+       ORDER BY check_in_time DESC LIMIT 1`,
+      [repId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ latitude: null, longitude: null, last_update: null });
+    }
+    
+    res.json({
+      latitude: parseFloat(result.rows[0].latitude),
+      longitude: parseFloat(result.rows[0].longitude),
+      last_update: result.rows[0].last_update
+    });
+  } catch (err) {
+    console.error('Error fetching sales rep location:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // Get all orders for a specific sales rep (for admin/manager viewing)
 app.get('/api/admin/sales-reps/:id/orders', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const repId = req.params.id;
@@ -708,7 +741,7 @@ app.put('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager')
 });
 
 // Delete sales rep (soft delete)
-app.delete('/api/admin/sales-reps/:id', authenticate, authorize('admin'), async (req, res) => {
+app.delete('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const repId = req.params.id;
 
   if (!pool) {
@@ -1222,8 +1255,8 @@ app.delete('/api/outlets/:id', authenticate, authorize('admin', 'manager'), asyn
 // GEOFENCES, ROUTE
 // =====================================================
 app.get('/api/geofences', authenticate, async (req, res) => {
-  const employeeId = req.user.employee_id;
   const role = req.user.role;
+  const repId = role === 'rep' ? req.user.employee_id : (req.query.rep_id ? parseInt(req.query.rep_id, 10) : null);
 
   if (!pool) return res.json([{ id: 1, name: "Toko Maju Jaya", lat: -6.2088, lng: 106.8456, radius: 50 }]);
 
@@ -1232,7 +1265,7 @@ app.get('/api/geofences', authenticate, async (req, res) => {
     let params = [];
     const ready = await tablesReady();
 
-    if (role === 'rep') {
+    if (repId) {
       if (ready.assignment) {
         query = `
           SELECT DISTINCT o.outlet_id as id, o.outlet_name as name, o.latitude as lat, o.longitude as lng, 50 as radius
@@ -1260,7 +1293,7 @@ app.get('/api/geofences', authenticate, async (req, res) => {
           AND o.latitude IS NOT NULL
           ORDER BY v.visit_time`;
       }
-      params = [employeeId];
+      params = [repId];
     } else {
       query = `
         SELECT outlet_id as id, outlet_name as name, latitude as lat, longitude as lng, 50 as radius
@@ -1276,9 +1309,10 @@ app.get('/api/geofences', authenticate, async (req, res) => {
   }
 });
 
+
 app.get('/api/route', authenticate, async (req, res) => {
-  const employeeId = req.user.employee_id;
   const role = req.user.role;
+  const repId = role === 'rep' ? req.user.employee_id : (req.query.rep_id ? parseInt(req.query.rep_id, 10) : null);
 
   if (!pool) return res.json([{ latitude: -6.2088, longitude: 106.8456 }]);
 
@@ -1286,7 +1320,7 @@ app.get('/api/route', authenticate, async (req, res) => {
     let query;
     let params = [];
 
-    if (role === 'rep') {
+    if (repId) {
       query = `
         SELECT o.latitude, o.longitude
         FROM outlet o
@@ -1297,7 +1331,7 @@ app.get('/api/route', authenticate, async (req, res) => {
         AND o.latitude IS NOT NULL
         ORDER BY v.visit_time
       `;
-      params = [employeeId];
+      params = [repId];
     } else {
       query = `
         SELECT latitude, longitude FROM outlet
@@ -1315,6 +1349,7 @@ app.get('/api/route', authenticate, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // =====================================================
 // PRODUCTS
@@ -1738,13 +1773,11 @@ app.post('/api/admin/sales-reps/:id/stock/upload-excel', authenticate, authorize
       return res.status(400).json({ error: 'File Excel kosong' });
     }
 
-    const requiredColumns = ['product_code', 'distributor_stock', 'van_stock', 'outlet_stock'];
     const firstRow = data[0];
-    const missingColumns = requiredColumns.filter(col => !(col in firstRow));
-    
-    if (missingColumns.length > 0) {
+    const hasIdentifier = ['product_code', 'product_name', 'nama_barang', 'nama'].some(col => col in firstRow);
+    if (!hasIdentifier) {
       return res.status(400).json({ 
-        error: `Kolom tidak ditemukan: ${missingColumns.join(', ')}. Pastikan file sesuai template.` 
+        error: 'Kolom identifikasi produk tidak ditemukan. Pastikan file Excel memiliki kolom "product_code" atau "nama_barang" / "product_name".' 
       });
     }
 
@@ -1755,30 +1788,50 @@ app.post('/api/admin/sales-reps/:id/stock/upload-excel', authenticate, authorize
     for (let i = 0; i < data.length; i++) {
       const row = data[i];
       const productCode = row['product_code']?.toString().trim();
-      const distributorStock = parseInt(row['distributor_stock']) || 0;
-      const vanStock = parseInt(row['van_stock']) || 0;
-      const outletStock = parseInt(row['outlet_stock']) || 0;
+      const productNameCol = (row['product_name'] || row['nama_barang'] || row['nama'])?.toString().trim();
+      
+      let distributorStock = parseInt(row['distributor_stock']) || 0;
+      let vanStock = parseInt(row['van_stock']) || 0;
+      let outletStock = parseInt(row['outlet_stock']) || 0;
 
-      if (!productCode) {
-        errors.push(`Baris ${i + 2}: product_code kosong`);
+      // Cek apakah user menggunakan kolom total stock umum
+      const generalStockVal = row['total_barang'] ?? row['total'] ?? row['stock'] ?? row['quantity'] ?? row['qty'];
+      if (generalStockVal !== undefined && !('distributor_stock' in row) && !('van_stock' in row) && !('outlet_stock' in row)) {
+        const parsedGeneral = parseInt(generalStockVal) || 0;
+        distributorStock = parsedGeneral;
+        vanStock = parsedGeneral;
+        outletStock = parsedGeneral;
+      }
+
+      if (!productCode && !productNameCol) {
+        errors.push(`Baris ${i + 2}: Kode produk dan nama produk kosong`);
         errorCount++;
         continue;
       }
 
       if (!pool) {
-        console.log(`Mock update for rep ${repId}: ${productCode} -> D:${distributorStock}, V:${vanStock}, O:${outletStock}`);
+        console.log(`Mock update for rep ${repId}: ${productCode || productNameCol} -> D:${distributorStock}, V:${vanStock}, O:${outletStock}`);
         successCount++;
         continue;
       }
 
       try {
-        const productResult = await pool.query(
-          `SELECT product_id FROM product WHERE product_code = $1 AND is_active = true`,
-          [productCode]
-        );
+        let productResult;
+        if (productCode) {
+          productResult = await pool.query(
+            `SELECT product_id, product_name FROM product WHERE product_code = $1 AND is_active = true`,
+            [productCode]
+          );
+        } else if (productNameCol) {
+          productResult = await pool.query(
+            `SELECT product_id, product_name FROM product WHERE LOWER(TRIM(product_name)) = LOWER($1) AND is_active = true`,
+            [productNameCol]
+          );
+        }
         
-        if (productResult.rows.length === 0) {
-          errors.push(`Baris ${i + 2}: product_code "${productCode}" tidak ditemukan`);
+        if (!productResult || productResult.rows.length === 0) {
+          const ident = productCode ? `product_code "${productCode}"` : `nama "${productNameCol}"`;
+          errors.push(`Baris ${i + 2}: Produk dengan ${ident} tidak ditemukan`);
           errorCount++;
           continue;
         }

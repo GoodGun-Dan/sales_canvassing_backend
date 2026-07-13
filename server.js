@@ -32,6 +32,7 @@ app.use((req, res, next) => {
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Konfigurasi multer untuk upload file Excel
 const storage = multer.memoryStorage();
@@ -46,6 +47,23 @@ const upload = multer({
       cb(new Error('Hanya file Excel (.xlsx, .xls) yang diperbolehkan'));
     }
   }
+});
+
+// Error handler untuk multer - return JSON instead of HTML
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File terlalu besar. Maksimal 5MB' });
+    }
+    if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({ error: 'Field file tidak ditemukan' });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+  if (err.message && err.message.includes('Hanya file Excel')) {
+    return res.status(400).json({ error: err.message });
+  }
+  next(err);
 });
 
 // =====================================================

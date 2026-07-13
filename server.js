@@ -1832,12 +1832,23 @@ app.get('/api/admin/sales-reps/:id/stock/download-template', authenticate, autho
 app.post('/api/admin/sales-reps/:id/stock/upload-excel', authenticate, authorize('admin', 'manager'), upload.single('file'), async (req, res) => {
   const repId = req.params.id;
   console.log(`📤 Excel upload request for rep ${repId}`);
+  console.log(`📁 File info:`, req.file ? {
+    originalname: req.file.originalname,
+    mimetype: req.file.mimetype,
+    size: req.file.size
+  } : 'No file');
+  console.log(`📋 Headers:`, {
+    'content-type': req.get('content-type'),
+    'authorization': req.get('authorization') ? 'Bearer ***' : 'No auth'
+  });
   
   // Ensure request is multipart/form-data
   if (!req.is('multipart/form-data')) {
+    console.log('❌ Not multipart/form-data');
     return res.status(400).json({ error: 'Content-Type must be multipart/form-data' });
   }
   if (!req.file) {
+    console.log('❌ No file in request');
     return res.status(400).json({ error: 'File tidak ditemukan' });
   }
 

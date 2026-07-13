@@ -51,6 +51,8 @@ const upload = multer({
 
 // Error handler untuk multer - return JSON instead of HTML
 app.use((err, req, res, next) => {
+  console.error('Error in request:', err);
+  
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({ error: 'File terlalu besar. Maksimal 5MB' });
@@ -63,7 +65,9 @@ app.use((err, req, res, next) => {
   if (err.message && err.message.includes('Hanya file Excel')) {
     return res.status(400).json({ error: err.message });
   }
-  next(err);
+  
+  // Return JSON for all errors
+  return res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
 // =====================================================

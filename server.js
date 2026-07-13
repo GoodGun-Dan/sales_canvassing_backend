@@ -40,8 +40,11 @@ const upload = multer({
   storage: storage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'];
-    if (allowedTypes.includes(file.mimetype)) {
+    // Check file extension instead of mimetype for more reliable detection
+    const allowedExtensions = ['.xlsx', '.xls'];
+    const fileExtension = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'));
+    
+    if (allowedExtensions.includes(fileExtension)) {
       cb(null, true);
     } else {
       cb(new Error('Hanya file Excel (.xlsx, .xls) yang diperbolehkan'));

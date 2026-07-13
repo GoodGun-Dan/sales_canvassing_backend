@@ -3000,6 +3000,16 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   `);
 });
 
+// Global error handler - return JSON for all errors
+app.use((err, req, res, next) => {
+  console.error('Error in request:', err);
+  
+  // Return JSON for all errors instead of HTML
+  return res.status(err.status || 500).json({ 
+    error: err.message || 'Internal server error'
+  });
+});
+
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`\n❌ Port ${PORT} sudah dipakai program lain.`);

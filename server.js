@@ -1807,16 +1807,18 @@ app.get('/api/admin/sales-reps/:id/stock/download-template', authenticate, autho
         ORDER BY product_name
       `);
       
-      // Template menggunakan kolom yang mudah diisi user
+      // Template menggunakan kolom yang sesuai dengan struktur data
       templateData = products.rows.map(p => ({
         nama_barang: p.product_name,
         product_code: p.product_code,
-        total_barang: 0,
-        keterangan: 'Isi kolom total_barang dengan jumlah stok'
+        distributor_stock: 0,
+        van_stock: 0,
+        outlet_stock: 0,
+        keterangan: 'Isi kolom stok sesuai lokasi penyimpanan'
       }));
     } else {
       templateData = [
-        { nama_barang: 'EnergiMax Drink 250ml', product_code: 'EM-250-RED', total_barang: 0, keterangan: 'Isi kolom total_barang dengan jumlah stok' }
+        { nama_barang: 'EnergiMax Drink 250ml', product_code: 'EM-250-RED', distributor_stock: 0, van_stock: 0, outlet_stock: 0, keterangan: 'Isi kolom stok sesuai lokasi penyimpanan' }
       ];
     }
     

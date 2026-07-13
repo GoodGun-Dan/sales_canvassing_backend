@@ -1815,6 +1815,10 @@ app.post('/api/admin/sales-reps/:id/stock/upload-excel', authenticate, authorize
   const repId = req.params.id;
   console.log(`📤 Excel upload request for rep ${repId}`);
   
+  // Ensure request is multipart/form-data
+  if (!req.is('multipart/form-data')) {
+    return res.status(400).json({ error: 'Content-Type must be multipart/form-data' });
+  }
   if (!req.file) {
     return res.status(400).json({ error: 'File tidak ditemukan' });
   }

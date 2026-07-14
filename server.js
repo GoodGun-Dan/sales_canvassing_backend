@@ -2,6 +2,8 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -19,7 +21,15 @@ try {
 
 const app = express();
 const PORT = 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'sales-canvassing-secret-key-2026';
+
+// JWT_SECRET harus di-set di environment variable, jangan gunakan default value untuk production
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('❌ ERROR: JWT_SECRET environment variable tidak di-set!');
+  console.error('Silakan buat file .env dan set JWT_SECRET dengan nilai yang kuat.');
+  console.error('Contoh: JWT_SECRET=your-very-long-random-secret-key-minimum-32-characters');
+  process.exit(1);
+}
 
 // =====================================================
 // LOGGING GLOBAL - UNTUK MELIHAT SEMUA REQUEST
@@ -30,7 +40,56 @@ app.use((req, res, next) => {
 });
 
 // Middleware
-app.use(cors());
+// Security headers dengan Helmet
+app.use(helmet());
+
+// Rate limiting untuk mencegah brute force dan DDoS
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 menit
+  max: 100, // maksimal 100 request per 15 menit per IP
+  message: 'Terlalu banyak request dari IP ini, coba lagi nanti.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Rate limiting yang lebih ketat untuk endpoint login
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 menit
+  max: 5, // maksimal 5 percobaan login per 15 menit per IP
+  message: 'Terlalu banyak percobaan login gagal. Akun terkunci sementara, coba lagi dalam 15 menit.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use(limiter);
+
+// CORS configuration - restrict ke origin tertentu untuk security
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow request dengan no origin (mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    
+    // List allowed origins (sesuaikan dengan production domain)
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:8080',
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:8080',
+      // Tambahkan production domain di sini, misalnya:
+      // 'https://your-production-domain.com'
+    ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true, // jika menggunakan cookies/auth headers
+  optionsSuccessStatus: 200 // some legacy browsers choke on 204
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -207,7 +266,7 @@ app.get('/api/test', (req, res) => {
 // AUTHENTICATION ENDPOINTS
 // =====================================================
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
@@ -345,8 +404,20 @@ app.post('/api/auth/change-password', authenticate, async (req, res) => {
     return res.status(400).json({ error: 'Old and new password required' });
   }
 
-  if (newPassword.length < 4) {
-    return res.status(400).json({ error: 'Password minimal 4 karakter' });
+  // Password complexity validation
+  if (newPassword.length < 8) {
+    return res.status(400).json({ error: 'Password minimal 8 karakter' });
+  }
+  
+  const hasUpperCase = /[A-Z]/.test(newPassword);
+  const hasLowerCase = /[a-z]/.test(newPassword);
+  const hasNumber = /[0-9]/.test(newPassword);
+  const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(newPassword);
+  
+  if (!hasUpperCase || !hasLowerCase || !hasNumber || !hasSpecialChar) {
+    return res.status(400).json({ 
+      error: 'Password harus mengandung minimal 1 huruf besar, 1 huruf kecil, 1 angka, dan 1 karakter khusus (!@#$%^&*(),.?":{}|<>)' 
+    });
   }
 
   if (!pool) {

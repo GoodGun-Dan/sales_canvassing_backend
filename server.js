@@ -858,6 +858,72 @@ app.put('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager')
   }
 });
 
+// =====================================================
+// ASSIGN / REMOVE OUTLET TO SALES REP
+// =====================================================
+
+// Remove outlet from sales rep (update status menjadi Missed dan deactivate outlet_assignment)
+// NOTE: This route must be defined BEFORE the general delete sales rep route
+app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  const repId = parseInt(req.params.id);
+  const outletId = parseInt(req.params.outlet_id);
+
+  if (isNaN(repId) || isNaN(outletId)) {
+    return res.status(400).json({ error: 'Invalid repId or outletId' });
+  }
+
+  if (!pool) {
+    return res.json({ success: true, message: 'Outlet removed (mock)' });
+  }
+
+  try {
+    const checkResult = await pool.query(
+      `SELECT visit_id, visit_date, status 
+       FROM visit 
+       WHERE employee_id = $1 
+       AND outlet_id = $2 
+       AND visit_date >= CURRENT_DATE
+       AND status IN ('Planned', 'InProgress')`,
+      [repId, outletId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'No active visit plan found for this outlet'
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE visit 
+       SET status = 'Missed' 
+       WHERE employee_id = $1 
+       AND outlet_id = $2 
+       AND visit_date >= CURRENT_DATE
+       AND status IN ('Planned', 'InProgress')
+       RETURNING visit_id, visit_date`,
+      [repId, outletId]
+    );
+
+    // Deactivate outlet_assignment so sales rep no longer sees this outlet
+    const ready = await tablesReady();
+    if (ready.assignment) {
+      await pool.query(
+        `UPDATE outlet_assignment SET is_active = false WHERE outlet_id = $1 AND employee_id = $2`,
+        [outletId, repId]
+      );
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Outlet removed from sales rep schedule',
+      visits_updated: result.rows.length
+    });
+  } catch (err) {
+    console.error('Error removing outlet:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Delete sales rep (soft delete)
 app.delete('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const repId = req.params.id;
@@ -1090,70 +1156,6 @@ app.post('/api/admin/sales-reps/:id/assign-outlet', authenticate, authorize('adm
   } catch (err) {
     console.error('❌ Error assigning outlet:', err);
     return res.status(500).json({ error: err.message });
-  }
-});
-
-// Remove outlet from sales rep (update status menjadi Missed dan deactivate outlet_assignment)
-app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, authorize('admin', 'manager'), async (req, res) => {
-  const repId = parseInt(req.params.id);
-  const outletId = parseInt(req.params.outlet_id);
-
-  if (isNaN(repId) || isNaN(outletId)) {
-    return res.status(400).json({ error: 'Invalid repId or outletId' });
-  }
-
-  if (!pool) {
-    return res.json({ success: true, message: 'Outlet removed (mock)' });
-  }
-
-  try {
-    const checkResult = await pool.query(
-      `SELECT visit_id, visit_date, status 
-       FROM visit 
-       WHERE employee_id = $1 
-       AND outlet_id = $2 
-       AND visit_date >= CURRENT_DATE
-       AND status IN ('Planned', 'InProgress')`,
-      [repId, outletId]
-    );
-
-    if (checkResult.rows.length === 0) {
-      return res.status(404).json({ 
-        error: 'No active visit plan found for this outlet'
-      });
-    }
-
-    const result = await pool.query(
-      `UPDATE visit 
-       SET status = 'Missed' 
-       WHERE employee_id = $1 
-       AND outlet_id = $2 
-       AND visit_date >= CURRENT_DATE
-       AND status IN ('Planned', 'InProgress')
-       RETURNING visit_id, visit_date`,
-      [repId, outletId]
-    );
-
-    // Deactivate outlet_assignment so sales rep no longer sees this outlet
-    const ready = await tablesReady();
-    if (ready.assignment) {
-      await pool.query(
-        `UPDATE outlet_assignment 
-         SET is_active = false 
-         WHERE employee_id = $1 AND outlet_id = $2`,
-        [repId, outletId]
-      );
-    }
-
-    res.json({ 
-      success: true, 
-      message: 'Outlet removed from schedule',
-      updated_visits: result.rows.length,
-      visit_ids: result.rows.map(r => r.visit_id)
-    });
-  } catch (err) {
-    console.error('Error removing outlet:', err);
-    res.status(500).json({ error: err.message });
   }
 });
 

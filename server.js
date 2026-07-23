@@ -1371,9 +1371,10 @@ app.get('/api/outlets', authenticate, async (req, res) => {
         params = [repId];
       }
     } else {
+      // For admin/manager without rep_id, show ALL active outlets
       query = `
         SELECT o.outlet_id, o.outlet_name, o.address, o.latitude, o.longitude,
-               o.priority, o.store_type, o.outlet_code, o.credit_limit, o.outstanding as rep_outstanding
+               o.priority, o.store_type, o.outlet_code, o.credit_limit, 0 as rep_outstanding
         FROM outlet o
         WHERE o.is_active = true
         ORDER BY o.priority ASC, o.outlet_name ASC`;

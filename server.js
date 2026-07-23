@@ -22,8 +22,8 @@ try {
 const app = express();
 const PORT = 3000;
 
-// Trust proxy for Railway (reverse proxy)
-app.set('trust proxy', true);
+// Trust proxy for Railway (reverse proxy) - only trust loopback addresses
+app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
 
 // JWT_SECRET harus di-set di environment variable, jangan gunakan default value untuk production
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -895,28 +895,28 @@ app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, a
 
     console.log('📊 Active visits found:', checkResult.rows.length);
 
-    if (checkResult.rows.length === 0) {
-      console.log('❌ No active visits found, returning 400');
-      return res.status(400).json({ 
-        error: 'No active visit plan found for this outlet'
-      });
+    let visitsUpdated = 0;
+    
+    // If there are active visits, update them to Missed
+    if (checkResult.rows.length > 0) {
+      console.log('🔄 Updating visit status to Missed...');
+      const result = await pool.query(
+        `UPDATE visit 
+         SET status = 'Missed' 
+         WHERE employee_id = $1 
+         AND outlet_id = $2 
+         AND visit_date >= CURRENT_DATE
+         AND status IN ('Planned', 'InProgress')
+         RETURNING visit_id, visit_date`,
+        [repId, outletId]
+      );
+      visitsUpdated = result.rows.length;
+      console.log('✅ Visits updated:', visitsUpdated);
+    } else {
+      console.log('ℹ️ No active visits found, skipping visit update');
     }
 
-    console.log('🔄 Updating visit status to Missed...');
-    const result = await pool.query(
-      `UPDATE visit 
-       SET status = 'Missed' 
-       WHERE employee_id = $1 
-       AND outlet_id = $2 
-       AND visit_date >= CURRENT_DATE
-       AND status IN ('Planned', 'InProgress')
-       RETURNING visit_id, visit_date`,
-      [repId, outletId]
-    );
-
-    console.log('✅ Visits updated:', result.rows.length);
-
-    // Deactivate outlet_assignment so sales rep no longer sees this outlet
+    // Always deactivate outlet_assignment so sales rep no longer sees this outlet
     const ready = await tablesReady();
     if (ready.assignment) {
       console.log('📝 Deactivating outlet assignments...');
@@ -930,8 +930,10 @@ app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, a
     console.log('✅ Sending success response');
     res.json({ 
       success: true, 
-      message: 'Outlet removed from sales rep schedule',
-      visits_updated: result.rows.length
+      message: visitsUpdated > 0 
+        ? 'Outlet removed from sales rep schedule (visits canceled)' 
+        : 'Outlet removed from sales rep schedule',
+      visits_updated: visitsUpdated
     });
   } catch (err) {
     console.error('❌ Error removing outlet:', err);

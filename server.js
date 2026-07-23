@@ -865,8 +865,10 @@ app.put('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager')
 // Remove outlet from sales rep (update status menjadi Missed dan deactivate outlet_assignment)
 // NOTE: This route must be defined BEFORE the general delete sales rep route
 app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  console.log('🗑️ REMOVE OUTLET ROUTE HIT!');
   const repId = parseInt(req.params.id);
   const outletId = parseInt(req.params.outlet_id);
+  console.log('repId:', repId, 'outletId:', outletId);
 
   if (isNaN(repId) || isNaN(outletId)) {
     return res.status(400).json({ error: 'Invalid repId or outletId' });

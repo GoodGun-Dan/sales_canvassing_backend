@@ -1319,7 +1319,7 @@ app.get('/api/outlets', authenticate, async (req, res) => {
               SELECT v.outlet_id FROM visit v
               WHERE v.employee_id = $1
               AND v.visit_date = CURRENT_DATE
-              AND v.status IN ('Planned', 'InProgress', 'Completed')
+              AND v.status IN ('Planned', 'InProgress')
             )
           )
           ORDER BY o.priority ASC, o.outlet_name ASC`;
@@ -1333,11 +1333,7 @@ app.get('/api/outlets', authenticate, async (req, res) => {
           AND o.outlet_id IN (
             SELECT DISTINCT v.outlet_id FROM visit v
             WHERE v.employee_id = $1
-            AND (
-              v.visit_date = CURRENT_DATE
-              AND v.status IN ('Planned', 'InProgress', 'Completed')
-              OR v.status IN ('Planned', 'InProgress')
-            )
+            AND v.status IN ('Planned', 'InProgress')
           )
           ORDER BY o.priority ASC, o.outlet_name ASC`;
         params = [repId];

@@ -22,6 +22,9 @@ try {
 const app = express();
 const PORT = 3000;
 
+// Trust proxy for Railway (reverse proxy)
+app.set('trust proxy', true);
+
 // JWT_SECRET harus di-set di environment variable, jangan gunakan default value untuk production
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -893,8 +896,8 @@ app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, a
     console.log('📊 Active visits found:', checkResult.rows.length);
 
     if (checkResult.rows.length === 0) {
-      console.log('❌ No active visits found, returning 404');
-      return res.status(404).json({ 
+      console.log('❌ No active visits found, returning 400');
+      return res.status(400).json({ 
         error: 'No active visit plan found for this outlet'
       });
     }

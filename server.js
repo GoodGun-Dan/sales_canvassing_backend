@@ -879,6 +879,7 @@ app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, a
   }
 
   try {
+    console.log('🔍 Checking for active visits...');
     const checkResult = await pool.query(
       `SELECT visit_id, visit_date, status 
        FROM visit 
@@ -889,12 +890,16 @@ app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, a
       [repId, outletId]
     );
 
+    console.log('📊 Active visits found:', checkResult.rows.length);
+
     if (checkResult.rows.length === 0) {
+      console.log('❌ No active visits found, returning 404');
       return res.status(404).json({ 
         error: 'No active visit plan found for this outlet'
       });
     }
 
+    console.log('🔄 Updating visit status to Missed...');
     const result = await pool.query(
       `UPDATE visit 
        SET status = 'Missed' 
@@ -906,22 +911,27 @@ app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, a
       [repId, outletId]
     );
 
+    console.log('✅ Visits updated:', result.rows.length);
+
     // Deactivate outlet_assignment so sales rep no longer sees this outlet
     const ready = await tablesReady();
     if (ready.assignment) {
+      console.log('📝 Deactivating outlet assignments...');
       await pool.query(
         `UPDATE outlet_assignment SET is_active = false WHERE outlet_id = $1 AND employee_id = $2`,
         [outletId, repId]
       );
+      console.log('✅ Outlet assignments deactivated');
     }
 
+    console.log('✅ Sending success response');
     res.json({ 
       success: true, 
       message: 'Outlet removed from sales rep schedule',
       visits_updated: result.rows.length
     });
   } catch (err) {
-    console.error('Error removing outlet:', err);
+    console.error('❌ Error removing outlet:', err);
     res.status(500).json({ error: err.message });
   }
 });

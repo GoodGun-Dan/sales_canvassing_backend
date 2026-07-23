@@ -1373,32 +1373,95 @@ app.put('/api/outlets/:id', authenticate, authorize('admin', 'manager'), async (
 
 app.delete('/api/outlets/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const outletId = parseInt(req.params.id, 10);
+  const force = req.query.force === 'true'; // Force delete option
+  
+  console.log('========================================');
+  console.log('🗑️ DELETE OUTLET REQUEST');
+  console.log('outletId:', outletId);
+  console.log('force:', force);
+  console.log('User:', req.user);
+  console.log('========================================');
   
   if (!pool) {
     // Mock mode: simulasikan penghapusan
+    console.log('⚠️ Mock mode - outlet deleted');
     return res.json({ success: true, message: 'Outlet deactivated (mock)' });
   }
   
   try {
-    // Soft-delete outlet
-    await pool.query(
-      `UPDATE outlet SET is_active = false WHERE outlet_id = $1`,
+    // Cek apakah outlet ada
+    const outletCheck = await pool.query(
+      `SELECT outlet_id, outlet_name, is_active FROM outlet WHERE outlet_id = $1`,
       [outletId]
     );
+    
+    if (outletCheck.rows.length === 0) {
+      console.log('❌ Outlet not found:', outletId);
+      return res.status(404).json({ error: 'Outlet not found' });
+    }
+    
+    const outlet = outletCheck.rows[0];
+    console.log('📍 Outlet found:', outlet.outlet_name, 'is_active:', outlet.is_active);
+    
+    // Cek apakah outlet memiliki visit aktif
+    const visitCheck = await pool.query(
+      `SELECT COUNT(*) as count FROM visit WHERE outlet_id = $1 AND status IN ('Planned', 'InProgress')`,
+      [outletId]
+    );
+    
+    const activeVisits = parseInt(visitCheck.rows[0].count);
+    console.log('📋 Active visits:', activeVisits);
+    
+    if (activeVisits > 0 && !force) {
+      console.log('⚠️ Cannot delete outlet with active visits (use force=true to override)');
+      return res.status(400).json({ 
+        error: 'Cannot delete outlet with active visit plans. Please complete or cancel the visits first, or use force=true to cancel them automatically.',
+        active_visits: activeVisits,
+        suggestion: 'Add ?force=true to the request to cancel active visits and delete the outlet'
+      });
+    }
+    
+    // Jika force=true, cancel semua visit aktif
+    if (activeVisits > 0 && force) {
+      console.log('🔧 Force delete: canceling active visits...');
+      const cancelResult = await pool.query(
+        `UPDATE visit SET status = 'Missed' WHERE outlet_id = $1 AND status IN ('Planned', 'InProgress') RETURNING COUNT(*) as count`,
+        [outletId]
+      );
+      console.log('✅ Visits canceled:', cancelResult.rows[0].count);
+    }
+    
+    // Soft-delete outlet
+    const updateResult = await pool.query(
+      `UPDATE outlet SET is_active = false WHERE outlet_id = $1 RETURNING outlet_id, outlet_name`,
+      [outletId]
+    );
+    
+    console.log('✅ Outlet deactivated:', updateResult.rows[0]);
+    
     // Nonaktifkan semua assignment sales ke outlet ini
     // supaya sales tidak lagi melihat outlet yang sudah dihapus
     const ready = await tablesReady();
     if (ready.assignment) {
-      await pool.query(
-        `UPDATE outlet_assignment SET is_active = false WHERE outlet_id = $1`,
+      const assignmentResult = await pool.query(
+        `UPDATE outlet_assignment SET is_active = false WHERE outlet_id = $1 RETURNING COUNT(*) as count`,
         [outletId]
       );
+      console.log('📝 Assignments deactivated:', assignmentResult.rows[0].count);
     }
-    res.json({ success: true });
+    
+    res.json({ 
+      success: true, 
+      message: force && activeVisits > 0 
+        ? 'Outlet deactivated and active visits canceled' 
+        : 'Outlet deactivated successfully',
+      outlet: updateResult.rows[0],
+      visits_canceled: force && activeVisits > 0 ? activeVisits : 0
+    });
   } catch (err) {
-    console.error('Error deleting outlet:', err);
+    console.error('❌ Error deleting outlet:', err);
     res.status(500).json({ error: err.message });
-  }
+ }
 });
 
 // =====================================================

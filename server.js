@@ -985,26 +985,58 @@ app.get('/api/admin/sales-reps/:id/outlets', authenticate, authorize('admin', 'm
   }
 
   try {
-    const result = await pool.query(`
-      SELECT DISTINCT 
-        o.outlet_id, 
-        o.outlet_name, 
-        o.address, 
-        o.latitude, 
-        o.longitude, 
-        o.priority, 
-        o.store_type,
-        o.outlet_code,
-        v.visit_date,
-        v.visit_time,
-        v.status as visit_status
-      FROM outlet o
-      INNER JOIN visit v ON v.outlet_id = o.outlet_id
-      WHERE o.is_active = true
-      AND v.employee_id = $1
-      AND v.status IN ('Planned', 'InProgress')
-      ORDER BY v.visit_date ASC, v.visit_time ASC
-    `, [repId]);
+    const ready = await tablesReady();
+    let result;
+    
+    if (ready.assignment) {
+      // Use outlet_assignment table as primary source
+      result = await pool.query(`
+        SELECT DISTINCT 
+          o.outlet_id, 
+          o.outlet_name, 
+          o.address, 
+          o.latitude, 
+          o.longitude, 
+          o.priority, 
+          o.store_type,
+          o.outlet_code,
+          v.visit_date,
+          v.visit_time,
+          v.status as visit_status
+        FROM outlet o
+        INNER JOIN outlet_assignment oa ON oa.outlet_id = o.outlet_id
+        LEFT JOIN visit v ON v.outlet_id = o.outlet_id 
+          AND v.employee_id = $1 
+          AND v.visit_date >= CURRENT_DATE
+          AND v.status IN ('Planned', 'InProgress')
+        WHERE o.is_active = true
+        AND oa.employee_id = $1
+        AND oa.is_active = true
+        ORDER BY COALESCE(v.visit_date, '9999-12-31') ASC, COALESCE(v.visit_time, '23:59:59') ASC
+      `, [repId]);
+    } else {
+      // Fallback to visit table if outlet_assignment doesn't exist
+      result = await pool.query(`
+        SELECT DISTINCT 
+          o.outlet_id, 
+          o.outlet_name, 
+          o.address, 
+          o.latitude, 
+          o.longitude, 
+          o.priority, 
+          o.store_type,
+          o.outlet_code,
+          v.visit_date,
+          v.visit_time,
+          v.status as visit_status
+        FROM outlet o
+        INNER JOIN visit v ON v.outlet_id = o.outlet_id
+        WHERE o.is_active = true
+        AND v.employee_id = $1
+        AND v.status IN ('Planned', 'InProgress')
+        ORDER BY v.visit_date ASC, v.visit_time ASC
+      `, [repId]);
+    }
 
     res.json(result.rows);
   } catch (err) {

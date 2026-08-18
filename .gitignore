@@ -1,5 +1,28 @@
+# Environment variables
 .env
-/node_modules
+.env.local
+.env.production
+
+# Database configuration
 db.js
+
+# Dependencies
+/node_modules
 package-lock.json
-package.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Scripts with sensitive data
+scripts/set-dev-passwords.js
+scripts/gen_hashes.js
+fix_passwords.sql

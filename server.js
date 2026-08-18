@@ -25,6 +25,55 @@ const PORT = 3000;
 // Trust proxy for Railway (reverse proxy) - only trust loopback addresses
 app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
 
+// =====================================================
+// 24-HOUR AUTO-REMOVAL SCHEDULED TASK
+// =====================================================
+function cleanupOldVisits() {
+  if (!pool) return;
+
+  setInterval(async () => {
+    try {
+      // Mark visits older than 24 hours as 'Expired' if they're still Planned/InProgress
+      const result = await pool.query(`
+        UPDATE visit
+        SET status = 'Expired',
+            notes = COALESCE(notes, '') || ' - Auto-expired after 24 hours'
+        WHERE visit_date < CURRENT_DATE - INTERVAL '1 day'
+        AND status IN ('Planned', 'InProgress')
+        RETURNING visit_id
+      `);
+
+      if (result.rows.length > 0) {
+        console.log(`🧹 Auto-removed ${result.rows.length} expired visits (older than 24 hours)`);
+      }
+    } catch (err) {
+      console.error('Error in cleanup task:', err.message);
+    }
+  }, 60 * 60 * 1000); // Run every hour
+
+  // Run once on startup
+  setTimeout(() => {
+    if (pool) {
+      pool.query(`
+        UPDATE visit
+        SET status = 'Expired',
+            notes = COALESCE(notes, '') || ' - Auto-expired after 24 hours'
+        WHERE visit_date < CURRENT_DATE - INTERVAL '1 day'
+        AND status IN ('Planned', 'InProgress')
+      `).then(result => {
+        if (result.rows.length > 0) {
+          console.log(`🧹 Startup cleanup: ${result.rows.length} expired visits removed`);
+        }
+      }).catch(err => {
+        console.error('Error in startup cleanup:', err.message);
+      });
+    }
+  }, 5000); // Run 5 seconds after startup
+}
+
+// Start the cleanup task
+cleanupOldVisits();
+
 // JWT_SECRET harus di-set di environment variable, jangan gunakan default value untuk production
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -371,9 +420,200 @@ app.get('/api/auth/profile', authenticate, async (req, res) => {
        WHERE e.employee_id = $1`,
       [req.user.employee_id]
     );
-    res.json(result.rows[0] || { employee_id: req.user.employee_id, role: req.user.role });
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to get profile' });
+    console.error('Profile error:', err);
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+// Forgot Password - Request verification code
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  if (!pool) {
+    // Mock mode - return success with a fake code
+    const mockCode = Math.floor(100000 + Math.random() * 900000).toString();
+    console.log(`📧 MOCK: Verification code for ${email}: ${mockCode}`);
+    return res.json({ 
+      success: true, 
+      message: 'Verification code sent to your email',
+      code: mockCode // Only for testing, remove in production
+    });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT e.employee_id, e.name, u.username
+       FROM employee e
+       JOIN user_account u ON u.employee_id = e.employee_id
+       WHERE e.email = $1 AND e.is_active = true`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      // Don't reveal if email exists for security
+      return res.json({ 
+        success: true, 
+        message: 'If email exists, verification code will be sent' 
+      });
+    }
+
+    const user = result.rows[0];
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    // Store verification code
+    await pool.query(
+      `INSERT INTO password_reset (employee_id, email, verification_code, expires_at, used)
+       VALUES ($1, $2, $3, $4, false)
+       ON CONFLICT (employee_id) DO UPDATE SET
+         email = $2,
+         verification_code = $3,
+         expires_at = $4,
+         used = false`,
+      [user.employee_id, email, verificationCode, expiresAt]
+    );
+
+    console.log(`📧 Verification code for ${email}: ${verificationCode}`);
+    
+    // TODO: Integrate with email service (e.g., Nodemailer, SendGrid)
+    // For now, log the code for testing
+    console.log(`📧 EMAIL SERVICE: Send code ${verificationCode} to ${email}`);
+
+    res.json({ 
+      success: true, 
+      message: 'Verification code sent to your email',
+      // For testing only, remove in production
+      code: verificationCode 
+    });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ error: 'Failed to send verification code' });
+  }
+});
+
+// Verify Code
+app.post('/api/auth/verify-code', async (req, res) => {
+  const { email, code } = req.body;
+
+  if (!email || !code) {
+    return res.status(400).json({ error: 'Email and code are required' });
+  }
+
+  if (!pool) {
+    return res.json({ success: true, message: 'Code verified' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT employee_id, expires_at, used
+       FROM password_reset
+       WHERE email = $1 AND verification_code = $2
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [email, code]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid verification code' });
+    }
+
+    const reset = result.rows[0];
+
+    if (reset.used) {
+      return res.status(400).json({ error: 'Verification code already used' });
+    }
+
+    if (new Date(reset.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Verification code expired' });
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Code verified successfully',
+      employee_id: reset.employee_id
+    });
+  } catch (err) {
+    console.error('Verify code error:', err);
+    res.status(500).json({ error: 'Failed to verify code' });
+  }
+});
+
+// Reset Password
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { email, code, newPassword } = req.body;
+
+  if (!email || !code || !newPassword) {
+    return res.status(400).json({ error: 'Email, code, and new password are required' });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+
+  if (!pool) {
+    return res.json({ success: true, message: 'Password reset successfully' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Verify code and get employee_id
+    const resetResult = await client.query(
+      `SELECT employee_id, used
+       FROM password_reset
+       WHERE email = $1 AND verification_code = $2
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [email, code]
+    );
+
+    if (resetResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Invalid verification code' });
+    }
+
+    const reset = resetResult.rows[0];
+
+    if (reset.used) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Verification code already used' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password
+    await client.query(
+      `UPDATE user_account SET password_hash = $1 WHERE employee_id = $2`,
+      [hashedPassword, reset.employee_id]
+    );
+
+    // Mark code as used
+    await client.query(
+      `UPDATE password_reset SET used = true WHERE employee_id = $1`,
+      [reset.employee_id]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({ success: true, message: 'Password reset successfully' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Reset password error:', err);
+    res.status(500).json({ error: 'Failed to reset password' });
+  } finally {
+    client.release();
   }
 });
 
@@ -711,6 +951,8 @@ app.get('/api/admin/sales-reps/:id/payments', authenticate, authorize('admin', '
 app.get('/api/admin/sales-reps/:id/analytics', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const repId = req.params.id;
   const days = parseInt(req.query.days) || 7;
+  const startDate = req.query.start_date;
+  const endDate = req.query.end_date;
   
   if (!pool) {
     return res.json({
@@ -722,14 +964,26 @@ app.get('/api/admin/sales-reps/:id/analytics', authenticate, authorize('admin', 
   }
 
   try {
-    const dailySales = await pool.query(`
+    let dailySalesQuery = `
       SELECT DATE(so.order_date) as date, COALESCE(SUM(so.total), 0) as total_sales
       FROM sales_order so 
       JOIN visit v ON v.visit_id = so.visit_id
-      WHERE v.employee_id = $1 AND v.visit_date >= CURRENT_DATE - ($2 || ' days')::INTERVAL
-      GROUP BY DATE(so.order_date) 
-      ORDER BY date ASC
-    `, [repId, days]);
+      WHERE v.employee_id = $1`;
+    
+    let dailySalesParams = [repId];
+    let paramCount = 1;
+
+    if (startDate && endDate) {
+      dailySalesQuery += ` AND DATE(so.order_date) >= $${++paramCount} AND DATE(so.order_date) <= $${++paramCount}`;
+      dailySalesParams.push(startDate, endDate);
+    } else {
+      dailySalesQuery += ` AND v.visit_date >= CURRENT_DATE - ($${++paramCount} || ' days')::INTERVAL`;
+      dailySalesParams.push(days);
+    }
+
+    dailySalesQuery += ` GROUP BY DATE(so.order_date) ORDER BY date ASC`;
+
+    const dailySales = await pool.query(dailySalesQuery, dailySalesParams);
 
     const topProducts = await pool.query(`
       SELECT p.product_name, SUM(od.quantity) as total_quantity, SUM(od.quantity * od.unit_price) as total_sales
@@ -754,18 +1008,32 @@ app.get('/api/admin/sales-reps/:id/analytics', authenticate, authorize('admin', 
       LIMIT 5
     `, [repId]);
 
-    const summary = await pool.query(`
+    let summaryQuery = `
       SELECT 
         COALESCE(SUM(so.total), 0) as total_sales,
         COUNT(DISTINCT so.order_id) as total_orders,
         COUNT(DISTINCT v.visit_id) as total_visits,
-        CASE WHEN COUNT(DISTINCT v.visit_id) > 0 
-          THEN (COUNT(DISTINCT CASE WHEN so.order_id IS NOT NULL THEN v.visit_id END)::float / COUNT(DISTINCT v.visit_id)) * 100 
-          ELSE 0 END as strike_rate
-      FROM visit v 
-      LEFT JOIN sales_order so ON so.visit_id = v.visit_id
-      WHERE v.employee_id = $1 AND v.visit_date >= CURRENT_DATE - INTERVAL '30 days'
-    `, [repId]);
+        CASE 
+          WHEN COUNT(DISTINCT v.visit_id) > 0 
+          THEN ROUND((COUNT(DISTINCT so.order_id)::numeric / COUNT(DISTINCT v.visit_id)) * 100, 2)
+          ELSE 0 
+        END as strike_rate
+      FROM sales_order so
+      JOIN visit v ON v.visit_id = so.visit_id
+      WHERE v.employee_id = $1`;
+    
+    let summaryParams = [repId];
+    let summaryParamCount = 1;
+
+    if (startDate && endDate) {
+      summaryQuery += ` AND DATE(so.order_date) >= $${++summaryParamCount} AND DATE(so.order_date) <= $${++summaryParamCount}`;
+      summaryParams.push(startDate, endDate);
+    } else {
+      summaryQuery += ` AND v.visit_date >= CURRENT_DATE - ($${++summaryParamCount} || ' days')::INTERVAL`;
+      summaryParams.push(days);
+    }
+
+    const summary = await pool.query(summaryQuery, summaryParams);
 
     res.json({
       dailySales: dailySales.rows,
@@ -774,7 +1042,70 @@ app.get('/api/admin/sales-reps/:id/analytics', authenticate, authorize('admin', 
       summary: summary.rows[0] || { total_sales: 0, total_orders: 0, total_visits: 0, strike_rate: 0 }
     });
   } catch (err) {
-    console.error('Error fetching rep analytics:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get transactions for a specific sales rep (for admin/manager viewing)
+app.get('/api/admin/sales-reps/:id/transactions', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  const repId = req.params.id;
+  const startDate = req.query.start_date;
+  const endDate = req.query.end_date;
+
+  if (!pool) {
+    const mockData = [];
+    const daysToGenerate = startDate && endDate 
+      ? Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1
+      : 30;
+    
+    for (let i = 0; i < daysToGenerate; i++) {
+      const d = startDate 
+        ? new Date(new Date(startDate).getTime() + i * 24 * 60 * 60 * 1000)
+        : new Date();
+      if (!startDate) d.setDate(d.getDate() - (daysToGenerate - 1 - i));
+      
+      const hasOrder = Math.random() > 0.3;
+      if (hasOrder) {
+        mockData.push({
+          date: d.toISOString().split('T')[0],
+          description: 'Penjualan Produk',
+          outlet_name: `Outlet ${i + 1}`,
+          amount: Math.floor(Math.random() * 3000000) + 500000,
+          status: 'Completed',
+        });
+      }
+    }
+    return res.json(mockData);
+  }
+
+  try {
+    let query = `
+      SELECT 
+         DATE(so.order_date) as date,
+         'Penjualan Produk' as description,
+         o.outlet_name,
+         so.total as amount,
+         so.sync_status as status
+       FROM sales_order so
+       JOIN visit v ON v.visit_id = so.visit_id
+       JOIN outlet o ON o.outlet_id = v.outlet_id
+       WHERE v.employee_id = $1`;
+    
+    let params = [repId];
+    let paramCount = 1;
+
+    if (startDate && endDate) {
+      query += ` AND DATE(so.order_date) >= $${++paramCount} AND DATE(so.order_date) <= $${++paramCount}`;
+      params.push(startDate, endDate);
+    } else {
+      query += ` AND so.order_date >= CURRENT_DATE - INTERVAL '30 days'`;
+    }
+
+    query += ` ORDER BY so.order_date DESC`;
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -799,15 +1130,15 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const employeeResult = await client.query(
-      `INSERT INTO employee (nik, name, email, phone, created_by, position) 
-       VALUES ($1, $2, $3, $4, $5, 'Sales Representative') 
+      `INSERT INTO employee (nik, name, email, phone, created_by, position)
+       VALUES ($1, $2, $3, $4, $5, 'Sales Representative')
        RETURNING employee_id`,
       [`EMP-${Date.now()}`, name, email, phone, managerId]
     );
     const employeeId = employeeResult.rows[0].employee_id;
 
     await client.query(
-      `INSERT INTO user_account (employee_id, username, password_hash, role, is_verified) 
+      `INSERT INTO user_account (employee_id, username, password_hash, role, is_verified)
        VALUES ($1, $2, $3, 'rep', true)`,
       [employeeId, username, hashedPassword]
     );
@@ -825,6 +1156,50 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error adding sales rep:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Add new manager
+app.post('/api/admin/managers', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  const { name, email, phone, username, password } = req.body;
+  const createdBy = req.user.employee_id;
+
+  if (!name || !email || !username || !password) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  if (!pool) {
+    return res.status(201).json({ success: true, message: 'Manager added (mock)', employee_id: Date.now() });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const employeeResult = await client.query(
+      `INSERT INTO employee (nik, name, email, phone, created_by, position)
+       VALUES ($1, $2, $3, $4, $5, 'Manager')
+       RETURNING employee_id`,
+      [`EMP-${Date.now()}`, name, email, phone, createdBy]
+    );
+    const employeeId = employeeResult.rows[0].employee_id;
+
+    await client.query(
+      `INSERT INTO user_account (employee_id, username, password_hash, role, is_verified)
+       VALUES ($1, $2, $3, 'manager', true)`,
+      [employeeId, username, hashedPassword]
+    );
+
+    await client.query('COMMIT');
+    res.status(201).json({ success: true, message: 'Manager added successfully', employee_id: employeeId });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error adding manager:', err);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
@@ -2560,8 +2935,10 @@ app.get('/api/visits/today', authenticate, async (req, res) => {
                v.check_in_time, v.check_out_time, v.visit_reason, o.priority
         FROM visit v
         JOIN outlet o ON o.outlet_id = v.outlet_id
-        WHERE v.employee_id = $1 AND v.visit_date = CURRENT_DATE
-        ORDER BY v.visit_time
+        WHERE v.employee_id = $1
+        AND v.visit_date >= CURRENT_DATE - INTERVAL '1 day'
+        AND v.status NOT IN ('Cancelled', 'Permission', 'Expired')
+        ORDER BY v.visit_date DESC, v.visit_time
       `;
       params = [employeeId];
     } else {
@@ -2604,6 +2981,50 @@ app.post('/api/visits/:id/missed', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Visit not found' });
     }
     res.json({ success: true, message: 'Visit marked as missed' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/visits/:id/cancel-permission', authenticate, async (req, res) => {
+  const { action_type, reason } = req.body;
+  const visitId = req.params.id;
+  const employeeId = req.user.employee_id;
+
+  if (!pool) {
+    return res.json({ success: true });
+  }
+
+  try {
+    let newStatus;
+    let notes;
+
+    if (action_type === 'cancel') {
+      newStatus = 'Cancelled';
+      notes = `Cancelled by sales: ${reason}`;
+    } else if (action_type === 'permission') {
+      newStatus = 'Permission';
+      notes = `Permission requested: ${reason}`;
+    } else {
+      return res.status(400).json({ error: 'Invalid action_type' });
+    }
+
+    const result = await pool.query(
+      `UPDATE visit SET status = $1, visit_reason = $2, notes = $3
+       WHERE visit_id = $4 AND employee_id = $5
+       RETURNING visit_id`,
+      [newStatus, reason, notes, visitId, employeeId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Visit not found' });
+    }
+
+    res.json({ 
+      success: true, 
+      message: action_type === 'cancel' ? 'Visit cancelled' : 'Permission requested',
+      status: newStatus 
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2751,13 +3172,22 @@ function resolveAnalyticsEmployeeId(req) {
 app.get('/api/analytics/daily-sales', authenticate, async (req, res) => {
   const employeeId = resolveAnalyticsEmployeeId(req);
   const days = parseInt(req.query.days, 10) || 7;
+  const startDate = req.query.start_date;
+  const endDate = req.query.end_date;
 
   if (!pool) {
-    // Mock data bermakna: simulasi penjualan 7 hari terakhir
+    // Mock data bermakna: simulasi penjualan
     const mockData = [];
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
+    const daysToGenerate = startDate && endDate 
+      ? Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1
+      : days;
+    
+    for (let i = daysToGenerate - 1; i >= 0; i--) {
+      const d = startDate 
+        ? new Date(new Date(startDate).getTime() + i * 24 * 60 * 60 * 1000)
+        : new Date();
+      if (!startDate) d.setDate(d.getDate() - i);
+      
       const totalSales = Math.floor(Math.random() * 5000000) + 1000000;
       const totalOrders = Math.floor(Math.random() * 10) + 1;
       const totalVisits = Math.floor(Math.random() * 15) + 5;
@@ -2774,8 +3204,8 @@ app.get('/api/analytics/daily-sales', authenticate, async (req, res) => {
   }
 
   try {
-    const result = await pool.query(
-      `SELECT 
+    let query = `
+      SELECT 
          DATE(so.order_date) as date, 
          COALESCE(SUM(so.total), 0) as total_sales,
          COUNT(DISTINCT so.order_id) as total_orders,
@@ -2787,11 +3217,86 @@ app.get('/api/analytics/daily-sales', authenticate, async (req, res) => {
          END as strike_rate
        FROM sales_order so
        JOIN visit v ON v.visit_id = so.visit_id
-       WHERE v.employee_id = $1 AND v.visit_date >= CURRENT_DATE - ($2 || ' days')::INTERVAL
-       GROUP BY DATE(so.order_date)
-       ORDER BY date ASC`,
-      [employeeId, days]
-    );
+       WHERE v.employee_id = $1`;
+    
+    let params = [employeeId];
+    let paramCount = 1;
+
+    if (startDate && endDate) {
+      query += ` AND DATE(so.order_date) >= $${++paramCount} AND DATE(so.order_date) <= $${++paramCount}`;
+      params.push(startDate, endDate);
+    } else {
+      query += ` AND v.visit_date >= CURRENT_DATE - ($${++paramCount} || ' days')::INTERVAL`;
+      params.push(days);
+    }
+
+    query += ` GROUP BY DATE(so.order_date) ORDER BY date ASC`;
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/transactions', authenticate, async (req, res) => {
+  const employeeId = resolveAnalyticsEmployeeId(req);
+  const startDate = req.query.start_date;
+  const endDate = req.query.end_date;
+
+  if (!pool) {
+    // Mock data for transactions
+    const mockData = [];
+    const daysToGenerate = startDate && endDate 
+      ? Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1
+      : 7;
+    
+    for (let i = 0; i < daysToGenerate; i++) {
+      const d = startDate 
+        ? new Date(new Date(startDate).getTime() + i * 24 * 60 * 60 * 1000)
+        : new Date();
+      if (!startDate) d.setDate(d.getDate() - (daysToGenerate - 1 - i));
+      
+      const hasOrder = Math.random() > 0.3;
+      if (hasOrder) {
+        mockData.push({
+          date: d.toISOString().split('T')[0],
+          description: 'Penjualan Produk',
+          outlet_name: `Outlet ${i + 1}`,
+          amount: Math.floor(Math.random() * 3000000) + 500000,
+          status: 'Completed',
+        });
+      }
+    }
+    return res.json(mockData);
+  }
+
+  try {
+    let query = `
+      SELECT 
+         DATE(so.order_date) as date,
+         'Penjualan Produk' as description,
+         o.outlet_name,
+         so.total as amount,
+         so.sync_status as status
+       FROM sales_order so
+       JOIN visit v ON v.visit_id = so.visit_id
+       JOIN outlet o ON o.outlet_id = v.outlet_id
+       WHERE v.employee_id = $1`;
+    
+    let params = [employeeId];
+    let paramCount = 1;
+
+    if (startDate && endDate) {
+      query += ` AND DATE(so.order_date) >= $${++paramCount} AND DATE(so.order_date) <= $${++paramCount}`;
+      params.push(startDate, endDate);
+    } else {
+      query += ` AND so.order_date >= CURRENT_DATE - INTERVAL '7 days'`;
+    }
+
+    query += ` ORDER BY so.order_date DESC`;
+
+    const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -3,9 +3,6 @@
 .env.local
 .env.production
 
-# Database configuration
-db.js
-
 # Dependencies
 /node_modules
 package-lock.json

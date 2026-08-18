@@ -1,0 +1,337 @@
+MOBILE SALES CANVASSING APPLICATION
+Thesis Defense - Computing Capstone Project
+Joseph Nugraha Wibawa
+
+===========================================
+SLIDE 1: COVER
+===========================================
+Title: Mobile Sales Canvassing Application
+Subtitle: Thesis Defense - Computing Capstone Project
+Author: Joseph Nugraha Wibawa
+
+===========================================
+SLIDE 2: BACKGROUND
+===========================================
+Title: Background
+
+Content:
+- Challenges in traditional sales canvassing systems:
+• Difficulty tracking sales representatives' locations in real-time
+• Unstructured and suboptimal outlet visit planning
+• Poor integration of sales and visit data
+• Ineffective and non-transparent sales team management
+• Lack of sales representative performance analytics
+
+- Solution: Mobile Sales Canvassing Application with GPS tracking, outlet visit management, and real-time performance analytics
+
+===========================================
+SLIDE 3: PROBLEM STATEMENT
+===========================================
+Title: Problem Statement
+
+Content:
+- How to design an effective sales canvassing system with GPS tracking?
+- How to implement structured outlet visit management?
+- How to integrate sales and visit data in real-time?
+- How to provide comprehensive sales representative performance analytics dashboard?
+- How to ensure data security and user access control?
+
+===========================================
+SLIDE 4: RESEARCH OBJECTIVES
+===========================================
+Title: Research Objectives
+
+Content:
+- Develop a comprehensive Mobile Sales Canvassing Application with:
+• GPS tracking for monitoring sales representative locations
+• Structured outlet visit planning and management
+• Real-time integration of sales and visit data
+• Sales representative performance analytics dashboard
+• Secure authentication and authorization system
+• Excel upload/download for bulk data management
+
+===========================================
+SLIDE 5: DEVELOPMENT METHODOLOGY
+===========================================
+Title: Development Methodology
+
+Left Column:
+1. Requirements Analysis
+   - Literature review
+   - Existing system analysis
+   - User needs identification
+
+2. System Design
+   - System architecture
+   - Database schema design
+   - UI/UX design
+
+3. Implementation
+   - Backend: Node.js/Express
+   - Frontend: Flutter
+   - Database: PostgreSQL
+
+Right Column:
+4. Testing
+   - Unit testing
+   - Integration testing
+   - User acceptance testing
+
+5. Deployment
+   - Server setup
+   - Mobile app deployment
+   - Monitoring & maintenance
+
+6. Evaluation
+   - Performance testing
+   - User feedback
+   - Documentation
+
+===========================================
+SLIDE 6: SYSTEM ARCHITECTURE
+===========================================
+Title: System Architecture
+
+Left Column:
+Backend Technologies:
+• Node.js with Express.js
+• PostgreSQL database
+• JWT authentication
+• RESTful API
+• Security: Helmet, Rate Limiting
+• File upload: Multer
+• Excel processing: XLSX
+
+Frontend Technologies:
+• Flutter framework
+• Dart programming language
+• OpenStreetMap integration
+• GPS & Geolocation
+• HTTP communication
+• Local storage
+• Chart visualization
+
+Right Column:
+Key Features:
+• Multi-role authentication (Admin, Manager, Supervisor, Rep)
+• Real-time location tracking
+• Visit planning & management
+• Sales order processing
+• Payment tracking
+• Analytics dashboard
+• Excel import/export
+• Team management
+
+Security Features:
+• Password hashing (bcrypt)
+• JWT token authentication
+• Role-based access control
+• Rate limiting
+• CORS configuration
+
+===========================================
+SLIDE 7: DATABASE SCHEMA
+===========================================
+Title: Database Schema - Core Tables
+
+Content:
+- Core Tables:
+• employee - Employee/sales representative data
+• user_account - Authentication and authorization
+• outlet - Outlet/store data to be visited
+• team & team_member - Sales team management
+
+- Operational Tables:
+• visit - Outlet visit data
+• sales_order - Sales order data
+• order_detail - Order item details
+• product - Product catalog
+• payment - Payment data
+
+- Supporting Tables:
+• outlet_assignment - Outlet assignment to sales reps
+• outlet_rep_balance - Outlet visit balance
+
+===========================================
+SLIDE 8: SALES REPRESENTATIVE FEATURES
+===========================================
+Title: Sales Representative Features
+
+Content:
+- Personal Dashboard:
+• View today's visit schedule
+• Check-in/check-out visits
+• Input sales orders
+• Track daily sales performance
+
+- Location Features:
+• Real-time GPS tracking
+• Navigation to outlets
+• Location-based check-in
+• Distance calculation
+
+- Data Management:
+• Product order input
+• Excel upload/download
+• View visit history
+
+===========================================
+SLIDE 9: ADMIN/MANAGER FEATURES
+===========================================
+Title: Admin/Manager Features
+
+Content:
+- Team Management:
+• Add/Edit/Delete sales representatives
+• Assign outlets to sales reps
+• Monitor team performance
+• View team live locations
+
+- Analytics Dashboard:
+• Sales analytics per sales rep
+• Visit performance metrics
+• Top products & outlets
+• Daily/weekly/monthly reports
+
+- Data Management:
+• Import outlet data via Excel
+• Manage product catalog
+• View all orders & payments
+
+===========================================
+SLIDE 10: BACKEND API IMPLEMENTATION
+===========================================
+Title: Backend API Implementation
+
+Left Column:
+Authentication Endpoints:
+• POST /api/auth/login
+• GET /api/auth/profile
+• PUT /api/auth/profile
+• POST /api/auth/change-password
+
+Sales Rep Management:
+• GET /api/admin/sales-reps
+• POST /api/admin/sales-reps
+• PUT /api/admin/sales-reps/:id
+• DELETE /api/admin/sales-reps/:id
+
+Visit Management:
+• GET /api/visits
+• POST /api/visits
+• PUT /api/visits/:id/check-in
+• PUT /api/visits/:id/check-out
+
+Right Column:
+Sales Order Endpoints:
+• GET /api/orders
+• POST /api/orders
+• GET /api/orders/:id
+
+Analytics Endpoints:
+• GET /api/analytics/sales
+• GET /api/analytics/visits
+• GET /api/admin/sales-reps/:id/analytics
+
+File Operations:
+• POST /api/import/outlets
+• GET /api/export/orders
+
+Location Services:
+• PUT /api/location/update
+• GET /api/admin/sales-reps/:id/location
+
+===========================================
+SLIDE 11: FRONTEND FLUTTER IMPLEMENTATION
+===========================================
+Title: Frontend Flutter Implementation
+
+Content:
+- Main Screens:
+• Login Screen - User authentication
+• Dashboard Screen - Visit & sales overview
+• Visit List Screen - List of outlets to visit
+• Visit Detail Screen - Visit details & check-in/out
+• Order Form Screen - Sales order input
+• Map Screen - Outlet location map & navigation
+
+- State Management:
+• Provider pattern for state management
+• Shared preferences for local storage
+• HTTP client for API communication
+
+- UI Components:
+• Material Design components
+• Custom widgets for charts & maps
+• Responsive design for various screen sizes
+
+===========================================
+SLIDE 12: RESULTS AND DISCUSSION
+===========================================
+Title: Results and Discussion
+
+Left Column:
+Functional Testing:
+✓ Authentication works correctly
+✓ Multi-role access control successful
+✓ GPS tracking accurate
+✓ Visit management runs smoothly
+✓ Sales order processing successful
+✓ Excel import/export functional
+
+Performance Testing:
+✓ Response time < 2 seconds
+✓ Real-time GPS updates
+✓ Smooth data synchronization
+✓ Optimal memory usage
+
+Right Column:
+Security Testing:
+✓ Password hashing implemented
+✓ Secure JWT authentication
+✓ Rate limiting prevents brute force
+✓ Proper CORS configuration
+
+User Acceptance Testing:
+✓ Intuitive and user-friendly UI
+✓ Features meet user needs
+✓ Offline capability available
+✓ Satisfying performance
+
+===========================================
+SLIDE 13: CONCLUSION
+===========================================
+Title: Conclusion
+
+Content:
+- Mobile Sales Canvassing Application successfully developed with comprehensive features:
+• GPS tracking for real-time sales representative location monitoring
+• Structured and efficient outlet visit management
+• Seamless integration of sales and visit data
+• Comprehensive performance analytics dashboard
+• Robust security system with multi-role access control
+
+- The application provides an effective solution to traditional sales canvassing problems and improves sales team efficiency and productivity
+
+===========================================
+SLIDE 14: FUTURE DEVELOPMENT SUGGESTIONS
+===========================================
+Title: Future Development Suggestions
+
+Content:
+- Additional features that can be developed:
+• Push notifications for visit reminders
+• Integration with payment gateway
+• AI-powered route optimization
+• Voice command for data input
+• Offline-first architecture for better offline experience
+• Integration with existing CRM systems
+• Advanced analytics with machine learning
+• Multi-language support
+• Web dashboard for desktop admin access
+
+===========================================
+SLIDE 15: THANK YOU
+===========================================
+Title: Thank You
+Subtitle: Questions & Discussion

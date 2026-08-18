@@ -1,0 +1,601 @@
+MOBILE SALES CANVASSING APPLICATION
+Comprehensive Feature Presentation
+Joseph Nugraha Wibawa
+
+===========================================
+SLIDE 1: COVER
+===========================================
+Title: Mobile Sales Canvassing Application
+Subtitle: Comprehensive Feature Overview
+Author: Joseph Nugraha Wibawa
+
+===========================================
+SLIDE 2: APPLICATION OVERVIEW
+===========================================
+Title: Application Overview
+
+Content:
+- Mobile Sales Canvassing Application is a comprehensive field sales management system
+- Designed to help sales representatives efficiently visit clients, take orders, and manage relationships
+- Multi-role system supporting Admin, Manager, Supervisor, and Sales Representative roles
+- Real-time GPS tracking and location-based features
+- Complete sales cycle management from visit planning to payment collection
+
+===========================================
+SLIDE 3: USER ROLES & ACCESS CONTROL
+===========================================
+Title: User Roles & Access Control
+
+Content:
+- Admin: Full system access, manage all users, outlets, and system configuration
+- Manager: Team management, assign outlets, monitor team performance, view analytics
+- Supervisor: Monitor team activities, view reports, assist with team coordination
+- Sales Representative: Field operations, visit outlets, take orders, collect payments
+- Role-based access control with JWT authentication
+- Secure password management with bcrypt hashing
+
+===========================================
+SLIDE 4: CORE FEATURES OVERVIEW
+===========================================
+Title: Core Features Overview
+
+Content:
+- Authentication & User Management
+- Dashboard & Analytics
+- Visit Management & Planning
+- GPS Tracking & Location Services
+- Order Taking & Sales Management
+- Stock Management
+- Collections & Payment Tracking
+- Outlet Management
+- Merchandising
+- Route Planning
+- Settings & Configuration
+
+===========================================
+SLIDE 5: AUTHENTICATION FEATURES
+===========================================
+Title: Authentication Features
+
+Content:
+- Secure login system with username and password
+- JWT token-based authentication for API security
+- Role-based access control (RBAC)
+- Password change functionality with complexity validation
+- Profile management (name, email, phone)
+- Session management with token expiration
+- Rate limiting to prevent brute force attacks
+- Auto-logout and session timeout
+
+===========================================
+SLIDE 6: DASHBOARD FEATURES
+===========================================
+Title: Dashboard Features
+
+Content:
+- Sales Representative Dashboard:
+• Today's visit schedule and overview
+• Daily sales performance metrics
+• Pending tasks and reminders
+• Quick access to main features
+
+- Admin/Manager Dashboard:
+• Team overview and performance summary
+• Sales analytics and trends
+• Active sales representatives list
+• System health indicators
+• Quick navigation to management features
+
+===========================================
+SLIDE 7: VISIT MANAGEMENT
+===========================================
+Title: Visit Management
+
+Content:
+- View scheduled visits for the day
+- Check-in/check-out functionality with GPS validation
+- Visit status tracking (Planned, In Progress, Completed, Missed)
+- Visit history and records
+- Outlet information and details
+- Visit notes and comments
+- Distance calculation to outlets
+- Time tracking for each visit
+
+===========================================
+SLIDE 8: ROUTE PLANNING
+===========================================
+Title: Route Planning
+
+Content:
+- Optimal route planning for daily visits
+- Visual map display of outlet locations
+- Route optimization based on distance and priority
+- Drag-and-drop visit reordering
+- Estimated travel time between outlets
+- Priority-based visit scheduling
+- Export route plans for offline use
+- Integration with GPS navigation
+
+===========================================
+SLIDE 9: GPS TRACKING
+===========================================
+Title: GPS Tracking Features
+
+Content:
+- Real-time location tracking for sales representatives
+- Live location updates every 30 seconds
+- Location history and trail recording
+- Geofencing capabilities for outlet areas
+- Check-in validation based on location
+- Distance calculation from current location to outlets
+- Navigation integration with map services
+- Location-based notifications and reminders
+
+===========================================
+SLIDE 10: ORDER TAKING
+===========================================
+Title: Order Taking Features
+
+Content:
+- Product catalog with images and descriptions
+- Easy product search and filtering
+- Shopping cart functionality
+- Quantity and pricing management
+- Discount and promotion application
+- Order preview and confirmation
+- Multiple payment method support
+- Order history and tracking
+- Real-time stock availability check
+
+===========================================
+SLIDE 11: STOCK MANAGEMENT
+===========================================
+Title: Stock Management Features
+
+Content:
+- Real-time stock level monitoring
+- Stock upload via Excel files
+- Stock adjustment and reconciliation
+- Low stock alerts and notifications
+- Stock transfer between outlets
+- Stock history and movement tracking
+- Batch stock updates
+- Stock valuation and reporting
+- Integration with order system
+
+===========================================
+SLIDE 12: COLLECTIONS & PAYMENTS
+===========================================
+Title: Collections & Payment Features
+
+Content:
+- Payment tracking and recording
+- Multiple payment method support (cash, transfer, check)
+- Outstanding balance monitoring
+- Payment history and receipts
+- Credit limit management per outlet
+- Payment reminder system
+- Collection targets and tracking
+- Aging reports for overdue payments
+- Integration with accounting systems
+
+===========================================
+SLIDE 13: OUTLET MANAGEMENT
+===========================================
+Title: Outlet Management Features
+
+Content:
+- Comprehensive outlet database
+- Outlet creation and editing
+- Outlet categorization and segmentation
+- Contact information management
+- Credit limit assignment
+- Priority classification (A, B, C)
+- Store type classification
+- GPS coordinates for mapping
+- Outlet assignment to sales representatives
+- Outlet performance tracking
+
+===========================================
+SLIDE 14: MERCHANDISING
+===========================================
+Title: Merchandising Features
+
+Content:
+- Planogram management
+- Display compliance tracking
+- Photo documentation of displays
+- Competitor activity monitoring
+- Shelf space allocation
+- Promotion execution tracking
+- Merchandising checklists
+- Before/after photo comparison
+- Merchandising score calculation
+- Report generation
+
+===========================================
+SLIDE 15: ANALYTICS & REPORTING
+===========================================
+Title: Analytics & Reporting Features
+
+Content:
+- Sales performance analytics
+- Visit frequency and coverage analysis
+- Product performance metrics
+- Outlet performance ranking
+- Sales representative performance comparison
+- Daily, weekly, monthly reports
+- Trend analysis and forecasting
+- Custom report generation
+- Data visualization with charts
+- Export reports in various formats
+
+===========================================
+SLIDE 16: ADMIN FEATURES
+===========================================
+Title: Admin Management Features
+
+Content:
+- User account management (CRUD operations)
+- Sales representative onboarding and management
+- Team assignment and organization
+- Outlet database management
+- Product catalog management
+- System configuration and settings
+- Bulk data import/export via Excel
+- User activity monitoring
+- System audit logs
+- Performance monitoring
+
+===========================================
+SLIDE 17: MANAGER FEATURES
+===========================================
+Title: Manager Features
+
+Content:
+- Team performance monitoring
+- Individual sales representative analytics
+- Outlet assignment and management
+- Route planning approval
+- Target setting and tracking
+- Territory management
+- Sales forecast review
+- Team coordination tools
+- Performance review support
+- Resource allocation
+
+===========================================
+SLIDE 18: SUPERVISOR FEATURES
+===========================================
+Title: Supervisor Features
+
+Content:
+- Team activity monitoring
+- Visit compliance checking
+- Field support coordination
+- Issue escalation management
+- Performance tracking
+- Report review and approval
+- Training coordination
+- Quality assurance
+- Customer complaint handling
+- Team communication
+
+===========================================
+SLIDE 19: SETTINGS & CONFIGURATION
+===========================================
+Title: Settings & Configuration
+
+Content:
+- User profile management
+- Notification preferences
+- Display and theme settings
+- Language and regional settings
+- Data synchronization settings
+- Offline mode configuration
+- Privacy and security settings
+- App customization options
+- Help and support access
+- About and version information
+
+===========================================
+SLIDE 20: TECHNICAL ARCHITECTURE
+===========================================
+Title: Technical Architecture
+
+Content:
+- Frontend: Flutter framework with Dart
+- Backend: Node.js with Express.js
+- Database: PostgreSQL
+- Authentication: JWT tokens
+- Security: Helmet, Rate Limiting, CORS
+- File Handling: Multer for uploads
+- Excel Processing: XLSX library
+- Location Services: Geolocator
+- Maps: OpenStreetMap integration
+- State Management: Provider pattern
+
+===========================================
+SLIDE 21: API ENDPOINTS - AUTHENTICATION
+===========================================
+Title: API Endpoints - Authentication
+
+Content:
+- POST /api/auth/login - User登录
+- GET /api/auth/profile - Get user profile
+- PUT /api/auth/profile - Update user profile
+- POST /api/auth/change-password - Change password
+- POST /api/auth/logout - User logout
+
+Security Features:
+- Rate limiting on login attempts
+- Password complexity validation
+- JWT token expiration handling
+- Secure password hashing with bcrypt
+
+===========================================
+SLIDE 22: API ENDPOINTS - SALES REPS
+===========================================
+Title: API Endpoints - Sales Representatives
+
+Content:
+- GET /api/admin/sales-reps - List all sales reps
+- POST /api/admin/sales-reps - Add new sales rep
+- GET /api/admin/sales-reps/:id - Get sales rep details
+- PUT /api/admin/sales-reps/:id - Update sales rep
+- DELETE /api/admin/sales-reps/:id - Deactivate sales rep
+- GET /api/admin/sales-reps/:id/dashboard - Get rep dashboard data
+- GET /api/admin/sales-reps/:id/location - Get rep location
+- GET /api/admin/sales-reps/:id/orders - Get rep orders
+- GET /api/admin/sales-reps/:id/payments - Get rep payments
+- GET /api/admin/sales-reps/:id/analytics - Get rep analytics
+
+===========================================
+SLIDE 23: API ENDPOINTS - OUTLETS
+===========================================
+Title: API Endpoints - Outlets
+
+Content:
+- GET /api/outlets - List outlets (filtered by role)
+- POST /api/outlets - Create new outlet
+- GET /api/outlets/:id - Get outlet details
+- PUT /api/outlets/:id - Update outlet
+- DELETE /api/outlets/:id - Delete outlet
+- GET /api/admin/sales-reps/:id/outlets - Get assigned outlets
+- GET /api/admin/sales-reps/:id/available-outlets - Get unassigned outlets
+- POST /api/admin/sales-reps/:id/assign-outlet - Assign outlet to rep
+- DELETE /api/admin/sales-reps/:id/remove-outlet/:outlet_id - Remove outlet assignment
+
+===========================================
+SLIDE 24: API ENDPOINTS - VISITS & ORDERS
+===========================================
+Title: API Endpoints - Visits & Orders
+
+Content:
+- GET /api/visits - List visits
+- POST /api/visits - Create visit
+- PUT /api/visits/:id/check-in - Check-in to visit
+- PUT /api/visits/:id/check-out - Check-out from visit
+- GET /api/orders - List orders
+- POST /api/orders - Create order
+- GET /api/orders/:id - Get order details
+- PUT /api/orders/:id - Update order
+- DELETE /api/orders/:id - Cancel order
+- POST /api/visits/location - Update live location
+
+===========================================
+SLIDE 25: API ENDPOINTS - ANALYTICS & DATA
+===========================================
+Title: API Endpoints - Analytics & Data
+
+Content:
+- GET /api/analytics/sales - Sales analytics
+- GET /api/analytics/visits - Visit analytics
+- GET /api/dashboard - User dashboard data
+- POST /api/import/outlets - Import outlets via Excel
+- GET /api/export/orders - Export orders data
+- GET /api/geofences - Get geofence data
+- GET /api/route - Get route information
+- GET /api/stock - Get stock information
+- POST /api/stock/upload - Upload stock data
+
+===========================================
+SLIDE 26: DATABASE SCHEMA
+===========================================
+Title: Database Schema
+
+Content:
+Core Tables:
+- employee - Employee and user data
+- user_account - Authentication credentials
+- outlet - Outlet/store information
+- team & team_member - Team organization
+
+Operational Tables:
+- visit - Visit records and tracking
+- sales_order - Order information
+- order_detail - Order line items
+- product - Product catalog
+- payment - Payment records
+- stock - Inventory management
+- collection - Collection tracking
+
+Supporting Tables:
+- outlet_assignment - Outlet-to-rep assignment
+- outlet_rep_balance - Visit balance tracking
+- geofence - Location boundaries
+- route - Route information
+
+===========================================
+SLIDE 27: SECURITY FEATURES
+===========================================
+Title: Security Features
+
+Content:
+- Password hashing with bcrypt (10 rounds)
+- JWT token authentication with expiration
+- Role-based access control (RBAC)
+- Rate limiting to prevent brute force
+- CORS configuration for cross-origin protection
+- Helmet for security headers
+- Input validation and sanitization
+- SQL injection prevention with parameterized queries
+- File upload validation and size limits
+- Secure error handling without sensitive data exposure
+
+===========================================
+SLIDE 28: MOBILE APP FEATURES
+===========================================
+Title: Mobile App Features
+
+Content:
+- Cross-platform support (iOS, Android)
+- Offline capability for critical features
+- Push notifications for reminders
+- Camera integration for photo documentation
+- GPS and location services
+- Map integration with navigation
+- Touch ID/Face ID authentication support
+- Responsive design for various screen sizes
+- Material Design UI components
+- Smooth animations and transitions
+
+===========================================
+SLIDE 29: DATA MANAGEMENT
+===========================================
+Title: Data Management Features
+
+Content:
+- Excel import/export for bulk operations
+- Real-time data synchronization
+- Offline data caching
+- Conflict resolution for sync issues
+- Data backup and restore
+- Audit logging for data changes
+- Data validation before save
+- Bulk update capabilities
+- Data filtering and search
+- Custom report generation
+
+===========================================
+SLIDE 30: INTEGRATION CAPABILITIES
+===========================================
+Title: Integration Capabilities
+
+Content:
+- RESTful API for third-party integration
+- Excel file import/export
+- Payment gateway integration ready
+- CRM system integration support
+- Accounting software integration
+- Email notification system
+- SMS integration for alerts
+- Webhook support for real-time updates
+- API documentation available
+- Developer-friendly endpoints
+
+===========================================
+SLIDE 31: PERFORMANCE OPTIMIZATION
+===========================================
+Title: Performance Optimization
+
+Content:
+- Efficient database queries with indexing
+- Response time < 2 seconds for most operations
+- Real-time GPS updates (30-second intervals)
+- Optimized image loading and caching
+- Lazy loading for large datasets
+- Pagination for data lists
+- Background data synchronization
+- Memory-efficient state management
+- Network request optimization
+- Battery-efficient location tracking
+
+===========================================
+SLIDE 32: USER EXPERIENCE
+===========================================
+Title: User Experience Features
+
+Content:
+- Intuitive and user-friendly interface
+- Quick access to frequently used features
+- Contextual help and tooltips
+- Search and filter functionality
+- Customizable dashboard views
+- Quick actions and shortcuts
+- Visual indicators and status badges
+- Consistent design language
+- Accessibility features
+- Multi-language support ready
+
+===========================================
+SLIDE 33: REPORTING CAPABILITIES
+===========================================
+Title: Reporting Capabilities
+
+Content:
+- Sales performance reports
+- Visit coverage reports
+- Product performance analysis
+- Outlet performance ranking
+- Sales representative comparison
+- Collection and aging reports
+- Stock movement reports
+- Merchandising compliance reports
+- Custom date range reports
+- Export to PDF, Excel, CSV formats
+
+===========================================
+SLIDE 34: NOTIFICATION SYSTEM
+===========================================
+Title: Notification System
+
+Content:
+- Push notifications for visit reminders
+- Order confirmation notifications
+- Payment due alerts
+- Low stock warnings
+- Task assignment notifications
+- System announcements
+- Performance milestone alerts
+- Geofence-based notifications
+- Custom notification preferences
+- Notification history
+
+===========================================
+SLIDE 35: FUTURE ENHANCEMENTS
+===========================================
+Title: Future Enhancements
+
+Content:
+- AI-powered route optimization
+- Voice command for data input
+- Advanced analytics with machine learning
+- Predictive sales forecasting
+- Customer sentiment analysis
+- Automated order suggestions
+- Enhanced offline capabilities
+- Web dashboard for desktop access
+- Integration with more payment gateways
+- Blockchain for supply chain transparency
+
+===========================================
+SLIDE 36: CONCLUSION
+===========================================
+Title: Conclusion
+
+Content:
+- Mobile Sales Canvassing Application provides a comprehensive solution for field sales management
+- Covers entire sales cycle from planning to payment collection
+- Multi-role system with robust security features
+- Real-time tracking and analytics capabilities
+- User-friendly mobile interface with offline support
+- Scalable architecture for future enhancements
+- Proven technology stack with reliable performance
+- Ready for deployment and production use
+
+===========================================
+SLIDE 37: THANK YOU
+===========================================
+Title: Thank You
+Subtitle: Questions & Discussion

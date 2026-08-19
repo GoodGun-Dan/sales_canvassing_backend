@@ -1887,6 +1887,178 @@ app.delete('/api/outlets/:id', authenticate, authorize('admin', 'manager'), asyn
  }
 });
 
+// Upload Excel untuk outlet (manager/admin)
+app.post('/api/admin/outlets/upload-excel', authenticate, authorize('admin', 'manager'), upload.single('file'), async (req, res) => {
+  console.log('📤 Outlet Excel upload request');
+  
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  try {
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    console.log(`📊 Processing ${data.length} rows from Excel`);
+
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+
+    for (const row of data) {
+      try {
+        const outletData = {
+          outlet_code: row['outlet_code'] || row['Outlet Code'],
+          outlet_name: row['outlet_name'] || row['Outlet Name'],
+          address: row['address'] || row['Address'],
+          latitude: row['latitude'] || row['Latitude'] ? parseFloat(row['latitude'] || row['Latitude']) : null,
+          longitude: row['longitude'] || row['Longitude'] ? parseFloat(row['longitude'] || row['Longitude']) : null,
+          priority: row['priority'] || row['Priority'] || 'C',
+          store_type: row['store_type'] || row['Store Type'] || 'Retail',
+          owner_name: row['owner_name'] || row['Owner Name'] || '',
+          phone: row['phone'] || row['Phone'] || '',
+          credit_limit: row['credit_limit'] || row['Credit Limit'] ? parseFloat(row['credit_limit'] || row['Credit Limit']) : 0,
+        };
+
+        if (!outletData.outlet_code || !outletData.outlet_name || !outletData.address) {
+          errors.push({ row, error: 'Missing required fields (outlet_code, outlet_name, address)' });
+          errorCount++;
+          continue;
+        }
+
+        if (pool) {
+          await pool.query(
+            `INSERT INTO outlet (outlet_code, outlet_name, address, latitude, longitude, priority, store_type, owner_name, phone, credit_limit, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)`,
+            [
+              outletData.outlet_code,
+              outletData.outlet_name,
+              outletData.address,
+              outletData.latitude,
+              outletData.longitude,
+              outletData.priority,
+              outletData.store_type,
+              outletData.owner_name,
+              outletData.phone,
+              outletData.credit_limit,
+            ]
+          );
+        }
+        successCount++;
+      } catch (err) {
+        errors.push({ row, error: err.message });
+        errorCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Upload selesai: ${successCount} outlet berhasil ditambahkan, ${errorCount} gagal`,
+      successCount: successCount,
+      errorCount: errorCount,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (err) {
+    console.error('❌ Error processing outlet Excel:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Upload Excel untuk outlet assignment ke sales rep tertentu
+app.post('/api/admin/sales-reps/:id/outlets/upload-excel', authenticate, authorize('admin', 'manager'), upload.single('file'), async (req, res) => {
+  const repId = parseInt(req.params.id);
+  console.log(`📤 Outlet Excel upload request for rep ${repId}`);
+  
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  try {
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    console.log(`📊 Processing ${data.length} rows from Excel for rep ${repId}`);
+
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+
+    for (const row of data) {
+      try {
+        const outletData = {
+          outlet_code: row['outlet_code'] || row['Outlet Code'],
+          outlet_name: row['outlet_name'] || row['Outlet Name'],
+          address: row['address'] || row['Address'],
+          latitude: row['latitude'] || row['Latitude'] ? parseFloat(row['latitude'] || row['Latitude']) : null,
+          longitude: row['longitude'] || row['Longitude'] ? parseFloat(row['longitude'] || row['Longitude']) : null,
+          priority: row['priority'] || row['Priority'] || 'C',
+          store_type: row['store_type'] || row['Store Type'] || 'Retail',
+          owner_name: row['owner_name'] || row['Owner Name'] || '',
+          phone: row['phone'] || row['Phone'] || '',
+          credit_limit: row['credit_limit'] || row['Credit Limit'] ? parseFloat(row['credit_limit'] || row['Credit Limit']) : 0,
+          visit_date: row['visit_date'] || row['Visit Date'] || new Date().toISOString().split('T')[0],
+          visit_time: row['visit_time'] || row['Visit Time'] || '09:00:00',
+        };
+
+        if (!outletData.outlet_code || !outletData.outlet_name || !outletData.address) {
+          errors.push({ row, error: 'Missing required fields (outlet_code, outlet_name, address)' });
+          errorCount++;
+          continue;
+        }
+
+        if (pool) {
+          // Create outlet
+          const outletResult = await pool.query(
+            `INSERT INTO outlet (outlet_code, outlet_name, address, latitude, longitude, priority, store_type, owner_name, phone, credit_limit, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
+             RETURNING outlet_id`,
+            [
+              outletData.outlet_code,
+              outletData.outlet_name,
+              outletData.address,
+              outletData.latitude,
+              outletData.longitude,
+              outletData.priority,
+              outletData.store_type,
+              outletData.owner_name,
+              outletData.phone,
+              outletData.credit_limit,
+            ]
+          );
+
+          const newOutletId = outletResult.rows[0].outlet_id;
+
+          // Assign to sales rep with visit plan
+          await pool.query(
+            `INSERT INTO visit (employee_id, outlet_id, visit_date, visit_time, status)
+             VALUES ($1, $2, $3, $4, 'Planned')`,
+            [repId, newOutletId, outletData.visit_date, outletData.visit_time]
+          );
+        }
+        successCount++;
+      } catch (err) {
+        errors.push({ row, error: err.message });
+        errorCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Upload selesai: ${successCount} outlet berhasil ditambahkan dan diassign ke sales rep, ${errorCount} gagal`,
+      successCount: successCount,
+      errorCount: errorCount,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (err) {
+    console.error('❌ Error processing outlet Excel for rep:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // =====================================================
 // GEOFENCES, ROUTE
 // =====================================================

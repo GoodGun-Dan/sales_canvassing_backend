@@ -179,7 +179,8 @@ CREATE TABLE password_reset (
     verification_code VARCHAR(6) NOT NULL,
     expires_at TIMESTAMP NOT NULL,
     used BOOLEAN DEFAULT false,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(employee_id)
 );
 
 -- Outlet Assignment (assign outlets to sales reps)

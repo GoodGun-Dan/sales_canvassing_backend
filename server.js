@@ -495,15 +495,15 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
 
-    // Store verification code
+    // Store verification code - delete existing codes for this employee first
+    await pool.query(
+      `DELETE FROM password_reset WHERE employee_id = $1`,
+      [user.employee_id]
+    );
+
     await pool.query(
       `INSERT INTO password_reset (employee_id, email, verification_code, expires_at, used)
-       VALUES ($1, $2, $3, $4, false)
-       ON CONFLICT (employee_id) DO UPDATE SET
-         email = $2,
-         verification_code = $3,
-         expires_at = $4,
-         used = false`,
+       VALUES ($1, $2, $3, $4, false)`,
       [user.employee_id, email, verificationCode, expiresAt]
     );
 

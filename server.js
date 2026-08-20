@@ -547,7 +547,13 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     });
   } catch (err) {
     console.error('Forgot password error:', err);
-    res.status(500).json({ error: 'Failed to send verification code' });
+    console.error('Error details:', {
+      message: err.message,
+      code: err.code,
+      detail: err.detail,
+      hint: err.hint
+    });
+    res.status(500).json({ error: 'Failed to send verification code', details: err.message });
   }
 });
 

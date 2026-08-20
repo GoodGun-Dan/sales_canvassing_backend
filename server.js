@@ -1848,10 +1848,10 @@ app.delete('/api/outlets/:id', authenticate, authorize('admin', 'manager'), asyn
     if (activeVisits > 0 && force) {
       console.log('🔧 Force delete: canceling active visits...');
       const cancelResult = await pool.query(
-        `UPDATE visit SET status = 'Missed' WHERE outlet_id = $1 AND status IN ('Planned', 'InProgress') RETURNING COUNT(*) as count`,
+        `UPDATE visit SET status = 'Missed' WHERE outlet_id = $1 AND status IN ('Planned', 'InProgress') RETURNING *`,
         [outletId]
       );
-      console.log('✅ Visits canceled:', cancelResult.rows[0].count);
+      console.log('✅ Visits canceled:', cancelResult.rowCount);
     }
     
     // Soft-delete outlet
@@ -1867,10 +1867,10 @@ app.delete('/api/outlets/:id', authenticate, authorize('admin', 'manager'), asyn
     const ready = await tablesReady();
     if (ready.assignment) {
       const assignmentResult = await pool.query(
-        `UPDATE outlet_assignment SET is_active = false WHERE outlet_id = $1 RETURNING COUNT(*) as count`,
+        `UPDATE outlet_assignment SET is_active = false WHERE outlet_id = $1 RETURNING *`,
         [outletId]
       );
-      console.log('📝 Assignments deactivated:', assignmentResult.rows[0].count);
+      console.log('📝 Assignments deactivated:', assignmentResult.rowCount);
     }
     
     res.json({ 

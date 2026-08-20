@@ -8,6 +8,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const XLSX = require('xlsx');
+const nodemailer = require('nodemailer');
 
 // Coba load database, jika gagal tetap lanjut
 let pool;
@@ -17,6 +18,28 @@ try {
 } catch (err) {
   console.error('⚠️ Database module not found:', err.message);
   pool = null;
+}
+
+// Email transporter configuration
+let transporter;
+try {
+  if (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
+    transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST,
+      port: parseInt(process.env.EMAIL_PORT) || 587,
+      secure: false,
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASSWORD
+      }
+    });
+    console.log('✅ Email transporter configured');
+  } else {
+    console.log('⚠️ Email configuration missing - emails will be logged only');
+  }
+} catch (err) {
+  console.error('⚠️ Email transporter setup failed:', err.message);
+  transporter = null;
 }
 
 const app = express();
@@ -486,15 +509,41 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
     console.log(`📧 Verification code for ${email}: ${verificationCode}`);
     
-    // TODO: Integrate with email service (e.g., Nodemailer, SendGrid)
-    // For now, log the code for testing
-    console.log(`📧 EMAIL SERVICE: Send code ${verificationCode} to ${email}`);
+    // Send email with verification code
+    if (transporter) {
+      try {
+        const mailOptions = {
+          from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
+          to: email,
+          subject: 'Password Reset Verification Code',
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #333;">Password Reset Verification Code</h2>
+              <p>Hello ${user.name},</p>
+              <p>You have requested to reset your password. Your verification code is:</p>
+              <div style="background-color: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0;">
+                <span style="font-size: 32px; font-weight: bold; color: #007bff;">${verificationCode}</span>
+              </div>
+              <p>This code will expire in 15 minutes.</p>
+              <p>If you did not request this code, please ignore this email.</p>
+              <p style="color: #666; font-size: 12px;">This is an automated message, please do not reply.</p>
+            </div>
+          `
+        };
+
+        await transporter.sendMail(mailOptions);
+        console.log(`✅ Email sent successfully to ${email}`);
+      } catch (emailError) {
+        console.error('❌ Failed to send email:', emailError.message);
+        // Continue with response even if email fails (code is stored in DB)
+      }
+    } else {
+      console.log('⚠️ Email transporter not configured - code logged only');
+    }
 
     res.json({ 
       success: true, 
-      message: 'Verification code sent to your email',
-      // For testing only, remove in production
-      code: verificationCode 
+      message: 'Verification code sent to your email'
     });
   } catch (err) {
     console.error('Forgot password error:', err);

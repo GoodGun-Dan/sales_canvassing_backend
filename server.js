@@ -31,7 +31,9 @@ try {
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASSWORD
-      }
+      },
+      // Force IPv4 to avoid IPv6 connection issues on Railway
+      family: 4
     });
     console.log('✅ Email transporter configured');
   } else {

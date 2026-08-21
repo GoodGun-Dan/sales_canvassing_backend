@@ -89,7 +89,8 @@ class AuthService {
         if (userId <= 0) {
           return {
             'success': false,
-            'error': 'Login berhasil tetapi ID user tidak valid. Coba login ulang.',
+            'error':
+                'Login berhasil tetapi ID user tidak valid. Coba login ulang.',
           };
         }
         await saveToken(data['token']);
@@ -109,13 +110,116 @@ class AuthService {
           'success': false,
           'error':
               'Server tidak merespons ($baseUrl). Pastikan backend jalan (npm start). '
-              'HP fisik: flutter run --dart-define=API_HOST=IP_PC_ANDA',
+                  'HP fisik: flutter run --dart-define=API_HOST=IP_PC_ANDA',
         };
       }
       return {
         'success': false,
         'error':
             'Tidak bisa hubungi server di $baseUrl. Jalankan backend (npm start) dan periksa IP/API_HOST.',
+      };
+    }
+  }
+
+  static Future<Map<String, dynamic>> forgotPassword(String email) async {
+    try {
+      print('📧 Forgot password request to: $baseUrl/auth/forgot-password');
+      print('📧 Email: $email');
+
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/auth/forgot-password'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email}),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      print('📧 Response status: ${response.statusCode}');
+      print('📧 Response body: ${response.body}');
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return {
+          'success': true,
+          'message': data['message'],
+          'code': data['code']
+        };
+      } else {
+        return {
+          'success': false,
+          'error': data['error'] ?? 'Failed to send verification code'
+        };
+      }
+    } on Exception catch (e) {
+      print('❌ Forgot password error: $e');
+      print('❌ Base URL: $baseUrl');
+      return {
+        'success': false,
+        'error': 'Tidak bisa hubungi server di $baseUrl. Error: $e',
+      };
+    }
+  }
+
+  static Future<Map<String, dynamic>> verifyCode(
+      String email, String code) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/auth/verify-code'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email, 'code': code}),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200) {
+        return {
+          'success': true,
+          'message': data['message'],
+          'employee_id': data['employee_id']
+        };
+      } else {
+        return {
+          'success': false,
+          'error': data['error'] ?? 'Invalid verification code'
+        };
+      }
+    } on Exception catch (e) {
+      return {
+        'success': false,
+        'error': 'Tidak bisa hubungi server. Pastikan backend jalan.',
+      };
+    }
+  }
+
+  static Future<Map<String, dynamic>> resetPassword(
+      String email, String code, String newPassword) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/auth/reset-password'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(
+                {'email': email, 'code': code, 'newPassword': newPassword}),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200) {
+        return {'success': true, 'message': data['message']};
+      } else {
+        return {
+          'success': false,
+          'error': data['error'] ?? 'Failed to reset password'
+        };
+      }
+    } on Exception catch (e) {
+      return {
+        'success': false,
+        'error': 'Tidak bisa hubungi server. Pastikan backend jalan.',
       };
     }
   }

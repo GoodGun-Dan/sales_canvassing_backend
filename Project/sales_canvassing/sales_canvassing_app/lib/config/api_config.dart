@@ -9,7 +9,7 @@ class ApiConfig {
 
   // URL Railway
   static const String productionUrl =
-      'https://salescanvassingbackend-production.up.railway.app/api';
+      'https://salescanvassingbackend-production.ip.railway.app/api';
 
   static const String _envHost = String.fromEnvironment('API_HOST');
 

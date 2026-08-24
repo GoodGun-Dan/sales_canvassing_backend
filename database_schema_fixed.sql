@@ -436,6 +436,25 @@ INSERT INTO team_member (team_id, employee_id) VALUES
 (1, 5);
 
 -- =====================================================
+-- Notification System
+-- =====================================================
+
+CREATE TABLE notification (
+    notification_id SERIAL PRIMARY KEY,
+    employee_id INTEGER NOT NULL REFERENCES employee(employee_id) ON DELETE CASCADE,
+    type VARCHAR(50) NOT NULL,
+    title VARCHAR(200) NOT NULL,
+    message TEXT NOT NULL,
+    related_id INTEGER,
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_notification_employee ON notification(employee_id);
+CREATE INDEX idx_notification_read ON notification(is_read);
+CREATE INDEX idx_notification_created ON notification(created_at DESC);
+
+-- =====================================================
 -- 5. TRIGGERS & FUNCTIONS (diperbaiki untuk employee_id)
 -- =====================================================
 

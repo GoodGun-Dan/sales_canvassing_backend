@@ -211,6 +211,63 @@ app.use((err, req, res, next) => {
 });
 
 // =====================================================
+// VALIDATION FUNCTIONS
+// =====================================================
+
+function validateEmail(email) {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+}
+
+function validatePhone(phone) {
+  // Support Indonesian phone numbers: +62 or 08, 10-13 digits
+  const phoneRegex = /^(\+62|62|0)[0-9]{9,12}$/;
+  return phoneRegex.test(phone.replace(/[\s-]/g, ''));
+}
+
+function validatePassword(password) {
+  if (password.length < 8) {
+    return { valid: false, message: 'Password must be at least 8 characters' };
+  }
+  const hasUpperCase = /[A-Z]/.test(password);
+  const hasLowerCase = /[a-z]/.test(password);
+  const hasNumber = /[0-9]/.test(password);
+  const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(password);
+  
+  if (!hasUpperCase || !hasLowerCase || !hasNumber || !hasSpecialChar) {
+    return { 
+      valid: false, 
+      message: 'Password must contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character' 
+    };
+  }
+  return { valid: true };
+}
+
+async function generateUsername(name, pool) {
+  // Generate username from name: lowercase, remove spaces, add random number
+  const baseUsername = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  let username = baseUsername;
+  let counter = 1;
+  
+  while (true) {
+    try {
+      const result = await pool.query(
+        'SELECT username FROM user_account WHERE username = $1',
+        [username]
+      );
+      if (result.rows.length === 0) {
+        return username;
+      }
+      username = `${baseUsername}${counter}`;
+      counter++;
+    } catch (err) {
+      console.error('Error checking username:', err);
+      throw err;
+    }
+  }
+}
+
+// =====================================================
 // MIDDLEWARE AUTHENTICATION & AUTHORIZATION
 // =====================================================
 
@@ -663,6 +720,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
     );
 
     await client.query('COMMIT');
+
+    // Notify sales rep about successful order
+    // await createNotification(pool, employeeId, 'order', 'Order Created', 
+    //   `Order ${orderNumber} has been created successfully at ${outlet.outlet_name}.`, orderId);
 
     res.json({ success: true, message: 'Password reset successfully' });
   } catch (err) {
@@ -1172,17 +1233,64 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
   const { name, email, phone, username, password } = req.body;
   const managerId = req.user.employee_id;
 
-  if (!name || !email || !username || !password) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  // Validation
+  if (!name || !email) {
+    return res.status(400).json({ error: 'Name and email are required' });
+  }
+
+  if (!validateEmail(email)) {
+    return res.status(400).json({ error: 'Invalid email format' });
+  }
+
+  if (phone && !validatePhone(phone)) {
+    return res.status(400).json({ error: 'Invalid phone number format. Use Indonesian format (e.g., 08123456789 or +628123456789)' });
+  }
+
+  // Generate username if not provided
+  let finalUsername = username;
+  if (!finalUsername && pool) {
+    try {
+      finalUsername = await generateUsername(name, pool);
+    } catch (err) {
+      return res.status(500).json({ error: 'Failed to generate username' });
+    }
+  } else if (!finalUsername) {
+    finalUsername = name.toLowerCase().replace(/[^a-z0-9]/g, '') + Date.now();
+  }
+
+  // Validate password
+  const passwordValidation = validatePassword(password);
+  if (!passwordValidation.valid) {
+    return res.status(400).json({ error: passwordValidation.message });
   }
 
   if (!pool) {
-    return res.status(201).json({ success: true, message: 'Sales rep added (mock)', employee_id: Date.now() });
+    return res.status(201).json({ success: true, message: 'Sales rep added (mock)', employee_id: Date.now(), username: finalUsername });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Check for duplicate email
+    const emailCheck = await client.query(
+      'SELECT employee_id FROM employee WHERE email = $1',
+      [email]
+    );
+    if (emailCheck.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+
+    // Check for duplicate username
+    const usernameCheck = await client.query(
+      'SELECT username FROM user_account WHERE username = $1',
+      [finalUsername]
+    );
+    if (usernameCheck.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Username already exists' });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -1197,7 +1305,7 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
     await client.query(
       `INSERT INTO user_account (employee_id, username, password_hash, role, is_verified)
        VALUES ($1, $2, $3, 'rep', true)`,
-      [employeeId, username, hashedPassword]
+      [employeeId, finalUsername, hashedPassword]
     );
 
     const teamResult = await client.query(`SELECT team_id FROM team WHERE manager_id = $1`, [managerId]);
@@ -1209,7 +1317,12 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
     }
 
     await client.query('COMMIT');
-    res.status(201).json({ success: true, message: 'Sales rep added successfully', employee_id: employeeId });
+    
+    // Notify manager about new sales rep
+    await createNotification(pool, managerId, 'user', 'Sales Rep Added', 
+      `New sales rep ${name} has been added successfully.`, employeeId);
+    
+    res.status(201).json({ success: true, message: 'Sales rep added successfully', employee_id: employeeId, username: finalUsername });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error adding sales rep:', err);
@@ -1224,17 +1337,64 @@ app.post('/api/admin/managers', authenticate, authorize('admin', 'manager'), asy
   const { name, email, phone, username, password } = req.body;
   const createdBy = req.user.employee_id;
 
-  if (!name || !email || !username || !password) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  // Validation
+  if (!name || !email) {
+    return res.status(400).json({ error: 'Name and email are required' });
+  }
+
+  if (!validateEmail(email)) {
+    return res.status(400).json({ error: 'Invalid email format' });
+  }
+
+  if (phone && !validatePhone(phone)) {
+    return res.status(400).json({ error: 'Invalid phone number format. Use Indonesian format (e.g., 08123456789 or +628123456789)' });
+  }
+
+  // Generate username if not provided
+  let finalUsername = username;
+  if (!finalUsername && pool) {
+    try {
+      finalUsername = await generateUsername(name, pool);
+    } catch (err) {
+      return res.status(500).json({ error: 'Failed to generate username' });
+    }
+  } else if (!finalUsername) {
+    finalUsername = name.toLowerCase().replace(/[^a-z0-9]/g, '') + Date.now();
+  }
+
+  // Validate password
+  const passwordValidation = validatePassword(password);
+  if (!passwordValidation.valid) {
+    return res.status(400).json({ error: passwordValidation.message });
   }
 
   if (!pool) {
-    return res.status(201).json({ success: true, message: 'Manager added (mock)', employee_id: Date.now() });
+    return res.status(201).json({ success: true, message: 'Manager added (mock)', employee_id: Date.now(), username: finalUsername });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Check for duplicate email
+    const emailCheck = await client.query(
+      'SELECT employee_id FROM employee WHERE email = $1',
+      [email]
+    );
+    if (emailCheck.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+
+    // Check for duplicate username
+    const usernameCheck = await client.query(
+      'SELECT username FROM user_account WHERE username = $1',
+      [finalUsername]
+    );
+    if (usernameCheck.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Username already exists' });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -1249,11 +1409,11 @@ app.post('/api/admin/managers', authenticate, authorize('admin', 'manager'), asy
     await client.query(
       `INSERT INTO user_account (employee_id, username, password_hash, role, is_verified)
        VALUES ($1, $2, $3, 'manager', true)`,
-      [employeeId, username, hashedPassword]
+      [employeeId, finalUsername, hashedPassword]
     );
 
     await client.query('COMMIT');
-    res.status(201).json({ success: true, message: 'Manager added successfully', employee_id: employeeId });
+    res.status(201).json({ success: true, message: 'Manager added successfully', employee_id: employeeId, username: finalUsername });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error adding manager:', err);
@@ -1627,6 +1787,10 @@ app.post('/api/admin/sales-reps/:id/assign-outlet', authenticate, authorize('adm
     }
 
     console.log(`✅ Outlet ${outlet_id} assigned to rep ${repId}, visit_id: ${visitId}`);
+
+    // Notify sales rep about new visit assignment
+    await createNotification(pool, repId, 'visit', 'New Visit Assigned', 
+      `You have been assigned to visit "${outletCheck.rows[0].outlet_name}" on ${visitDate}.`, visitId);
 
     return res.status(200).json({ 
       success: true, 
@@ -2512,6 +2676,11 @@ app.post('/api/orders', authenticate, async (req, res) => {
     }
 
     await client.query('COMMIT');
+    
+    // Notify sales rep about successful order
+    await createNotification(pool, employeeId, 'order', 'Order Created', 
+      `Order ${orderNumber} has been created successfully at ${outlet.outlet_name}.`, orderId);
+    
     res.status(201).json({
       success: true,
       orderNumber,
@@ -3689,6 +3858,13 @@ app.post('/api/visits/checkin', authenticate, async (req, res) => {
       if (ready.assignment) {
         await ensureOutletAssignment(client, outletId, employeeId, employeeId);
       }
+      
+      // Update employee's last location
+      await client.query(
+        `UPDATE employee SET last_lat = $1, last_lng = $2, last_location_update = CURRENT_TIMESTAMP WHERE employee_id = $3`,
+        [latitude, longitude, employeeId]
+      );
+      
       await client.query('COMMIT');
     } catch (checkinErr) {
       await client.query('ROLLBACK');
@@ -3920,6 +4096,446 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   
   ═══════════════════════════════════════════════════════════════════
   `);
+});
+
+// =====================================================
+// NOTIFICATION SYSTEM
+// =====================================================
+
+// Create notification helper function
+async function createNotification(pool, employeeId, type, title, message, relatedId = null) {
+  try {
+    await pool.query(
+      `INSERT INTO notification (employee_id, type, title, message, related_id, is_read, created_at)
+       VALUES ($1, $2, $3, $4, $5, false, CURRENT_TIMESTAMP)`,
+      [employeeId, type, title, message, relatedId]
+    );
+  } catch (err) {
+    console.error('Error creating notification:', err);
+  }
+}
+
+// Get notifications for current user
+app.get('/api/notifications', authenticate, async (req, res) => {
+  const employeeId = req.user.employee_id;
+
+  if (!pool) {
+    return res.json([]);
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT notification_id, type, title, message, related_id, is_read, created_at
+       FROM notification
+       WHERE employee_id = $1
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [employeeId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching notifications:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark notification as read
+app.put('/api/notifications/:id/read', authenticate, async (req, res) => {
+  const notificationId = req.params.id;
+  const employeeId = req.user.employee_id;
+
+  if (!pool) {
+    return res.json({ success: true });
+  }
+
+  try {
+    await pool.query(
+      `UPDATE notification SET is_read = true 
+       WHERE notification_id = $1 AND employee_id = $2`,
+      [notificationId, employeeId]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error marking notification as read:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark all notifications as read
+app.put('/api/notifications/read-all', authenticate, async (req, res) => {
+  const employeeId = req.user.employee_id;
+
+  if (!pool) {
+    return res.json({ success: true });
+  }
+
+  try {
+    await pool.query(
+      `UPDATE notification SET is_read = true 
+       WHERE employee_id = $1 AND is_read = false`,
+      [employeeId]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error marking all notifications as read:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get unread notification count
+app.get('/api/notifications/unread-count', authenticate, async (req, res) => {
+  const employeeId = req.user.employee_id;
+
+  if (!pool) {
+    return res.json({ count: 0 });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT COUNT(*) as count FROM notification 
+       WHERE employee_id = $1 AND is_read = false`,
+      [employeeId]
+    );
+    res.json({ count: parseInt(result.rows[0].count) });
+  } catch (err) {
+    console.error('Error fetching unread count:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =====================================================
+// REPORT GENERATION ENDPOINTS
+// =====================================================
+
+// Generate Sales Report
+app.get('/api/reports/sales', authenticate, authorize('admin', 'manager', 'supervisor'), async (req, res) => {
+  const { start_date, end_date, rep_id } = req.query;
+  
+  if (!pool) {
+    return res.json({
+      summary: { total_sales: 0, total_orders: 0, avg_order_value: 0 },
+      by_rep: [],
+      by_outlet: [],
+      by_product: []
+    });
+  }
+
+  try {
+    let query = `
+      SELECT 
+        e.employee_id,
+        e.name as rep_name,
+        COUNT(DISTINCT so.order_id) as total_orders,
+        COALESCE(SUM(so.total), 0) as total_sales,
+        COALESCE(SUM(so.total) / COUNT(DISTINCT so.order_id), 0) as avg_order_value
+      FROM sales_order so
+      JOIN visit v ON v.visit_id = so.visit_id
+      JOIN employee e ON e.employee_id = v.employee_id
+      WHERE 1=1`;
+    
+    const params = [];
+    let paramCount = 0;
+
+    if (start_date && end_date) {
+      paramCount++;
+      query += ` AND DATE(so.order_date) >= $${paramCount}`;
+      params.push(start_date);
+      paramCount++;
+      query += ` AND DATE(so.order_date) <= $${paramCount}`;
+      params.push(end_date);
+    }
+
+    if (rep_id) {
+      paramCount++;
+      query += ` AND e.employee_id = $${paramCount}`;
+      params.push(rep_id);
+    }
+
+    query += ` GROUP BY e.employee_id, e.name ORDER BY total_sales DESC`;
+
+    const byRepResult = await pool.query(query, params);
+
+    // Sales by outlet
+    let outletQuery = `
+      SELECT 
+        o.outlet_id,
+        o.outlet_name,
+        COUNT(DISTINCT so.order_id) as total_orders,
+        COALESCE(SUM(so.total), 0) as total_sales
+      FROM sales_order so
+      JOIN visit v ON v.visit_id = so.visit_id
+      JOIN outlet o ON o.outlet_id = v.outlet_id
+      WHERE 1=1`;
+    
+    const outletParams = [];
+    let outletParamCount = 0;
+
+    if (start_date && end_date) {
+      outletParamCount++;
+      outletQuery += ` AND DATE(so.order_date) >= $${outletParamCount}`;
+      outletParams.push(start_date);
+      outletParamCount++;
+      outletQuery += ` AND DATE(so.order_date) <= $${outletParamCount}`;
+      outletParams.push(end_date);
+    }
+
+    if (rep_id) {
+      outletParamCount++;
+      outletQuery += ` AND v.employee_id = $${outletParamCount}`;
+      outletParams.push(rep_id);
+    }
+
+    outletQuery += ` GROUP BY o.outlet_id, o.outlet_name ORDER BY total_sales DESC`;
+
+    const byOutletResult = await pool.query(outletQuery, outletParams);
+
+    // Sales by product
+    let productQuery = `
+      SELECT 
+        p.product_id,
+        p.product_name,
+        SUM(od.quantity) as total_quantity,
+        COALESCE(SUM(od.quantity * od.unit_price), 0) as total_sales
+      FROM order_detail od
+      JOIN sales_order so ON so.order_id = od.order_id
+      JOIN visit v ON v.visit_id = so.visit_id
+      JOIN product p ON p.product_id = od.product_id
+      WHERE 1=1`;
+    
+    const productParams = [];
+    let productParamCount = 0;
+
+    if (start_date && end_date) {
+      productParamCount++;
+      productQuery += ` AND DATE(so.order_date) >= $${productParamCount}`;
+      productParams.push(start_date);
+      productParamCount++;
+      productQuery += ` AND DATE(so.order_date) <= $${productParamCount}`;
+      productParams.push(end_date);
+    }
+
+    if (rep_id) {
+      productParamCount++;
+      productQuery += ` AND v.employee_id = $${productParamCount}`;
+      productParams.push(rep_id);
+    }
+
+    productQuery += ` GROUP BY p.product_id, p.product_name ORDER BY total_sales DESC`;
+
+    const byProductResult = await pool.query(productQuery, productParams);
+
+    // Summary
+    const summaryResult = await pool.query(`
+      SELECT 
+        COUNT(DISTINCT so.order_id) as total_orders,
+        COALESCE(SUM(so.total), 0) as total_sales,
+        COALESCE(SUM(so.total) / NULLIF(COUNT(DISTINCT so.order_id), 0), 0) as avg_order_value
+      FROM sales_order so
+      JOIN visit v ON v.visit_id = so.visit_id
+      WHERE 1=1
+      ${start_date && end_date ? `AND DATE(so.order_date) >= $1 AND DATE(so.order_date) <= $2` : ''}
+      ${rep_id ? `AND v.employee_id = ${start_date && end_date ? 3 : 1}` : ''}
+    `, start_date && end_date ? [start_date, end_date] : rep_id ? [rep_id] : []);
+
+    res.json({
+      summary: summaryResult.rows[0],
+      by_rep: byRepResult.rows,
+      by_outlet: byOutletResult.rows,
+      by_product: byProductResult.rows
+    });
+  } catch (err) {
+    console.error('Error generating sales report:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate Visit Report
+app.get('/api/reports/visits', authenticate, authorize('admin', 'manager', 'supervisor'), async (req, res) => {
+  const { start_date, end_date, rep_id } = req.query;
+  
+  if (!pool) {
+    return res.json({
+      summary: { total_visits: 0, completed_visits: 0, missed_visits: 0, strike_rate: 0 },
+      by_rep: [],
+      by_status: []
+    });
+  }
+
+  try {
+    let query = `
+      SELECT 
+        e.employee_id,
+        e.name as rep_name,
+        COUNT(DISTINCT v.visit_id) as total_visits,
+        COUNT(DISTINCT CASE WHEN v.status = 'Completed' THEN v.visit_id END) as completed_visits,
+        COUNT(DISTINCT CASE WHEN v.status = 'Missed' THEN v.visit_id END) as missed_visits,
+        COUNT(DISTINCT CASE WHEN v.status = 'Cancelled' THEN v.visit_id END) as cancelled_visits,
+        COUNT(DISTINCT CASE WHEN v.status = 'Permission' THEN v.visit_id END) as permission_visits,
+        ROUND(
+          (COUNT(DISTINCT CASE WHEN v.status = 'Completed' THEN v.visit_id END)::numeric / 
+           NULLIF(COUNT(DISTINCT v.visit_id), 0)) * 100, 2
+        ) as strike_rate
+      FROM visit v
+      JOIN employee e ON e.employee_id = v.employee_id
+      WHERE 1=1`;
+    
+    const params = [];
+    let paramCount = 0;
+
+    if (start_date && end_date) {
+      paramCount++;
+      query += ` AND v.visit_date >= $${paramCount}`;
+      params.push(start_date);
+      paramCount++;
+      query += ` AND v.visit_date <= $${paramCount}`;
+      params.push(end_date);
+    }
+
+    if (rep_id) {
+      paramCount++;
+      query += ` AND e.employee_id = $${paramCount}`;
+      params.push(rep_id);
+    }
+
+    query += ` GROUP BY e.employee_id, e.name ORDER BY total_visits DESC`;
+
+    const byRepResult = await pool.query(query, params);
+
+    // By status
+    let statusQuery = `
+      SELECT 
+        v.status,
+        COUNT(DISTINCT v.visit_id) as count
+      FROM visit v
+      WHERE 1=1`;
+    
+    const statusParams = [];
+    let statusParamCount = 0;
+
+    if (start_date && end_date) {
+      statusParamCount++;
+      statusQuery += ` AND v.visit_date >= $${statusParamCount}`;
+      statusParams.push(start_date);
+      statusParamCount++;
+      statusQuery += ` AND v.visit_date <= $${statusParamCount}`;
+      statusParams.push(end_date);
+    }
+
+    if (rep_id) {
+      statusParamCount++;
+      statusQuery += ` AND v.employee_id = $${statusParamCount}`;
+      statusParams.push(rep_id);
+    }
+
+    statusQuery += ` GROUP BY v.status ORDER BY count DESC`;
+
+    const byStatusResult = await pool.query(statusQuery, statusParams);
+
+    // Summary
+    const summaryResult = await pool.query(`
+      SELECT 
+        COUNT(DISTINCT v.visit_id) as total_visits,
+        COUNT(DISTINCT CASE WHEN v.status = 'Completed' THEN v.visit_id END) as completed_visits,
+        COUNT(DISTINCT CASE WHEN v.status = 'Missed' THEN v.visit_id END) as missed_visits,
+        ROUND(
+          (COUNT(DISTINCT CASE WHEN v.status = 'Completed' THEN v.visit_id END)::numeric / 
+           NULLIF(COUNT(DISTINCT v.visit_id), 0)) * 100, 2
+        ) as strike_rate
+      FROM visit v
+      WHERE 1=1
+      ${start_date && end_date ? `AND v.visit_date >= $1 AND v.visit_date <= $2` : ''}
+      ${rep_id ? `AND v.employee_id = ${start_date && end_date ? 3 : 1}` : ''}
+    `, start_date && end_date ? [start_date, end_date] : rep_id ? [rep_id] : []);
+
+    res.json({
+      summary: summaryResult.rows[0],
+      by_rep: byRepResult.rows,
+      by_status: byStatusResult.rows
+    });
+  } catch (err) {
+    console.error('Error generating visit report:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate Performance Report
+app.get('/api/reports/performance', authenticate, authorize('admin', 'manager', 'supervisor'), async (req, res) => {
+  const { start_date, end_date, rep_id } = req.query;
+  
+  if (!pool) {
+    return res.json({
+      summary: { total_reps: 0, avg_strike_rate: 0, total_sales: 0, total_visits: 0 },
+      by_rep: []
+    });
+  }
+
+  try {
+    let query = `
+      SELECT 
+        e.employee_id,
+        e.name as rep_name,
+        COUNT(DISTINCT v.visit_id) as total_visits,
+        COUNT(DISTINCT CASE WHEN v.status = 'Completed' THEN v.visit_id END) as completed_visits,
+        COUNT(DISTINCT so.order_id) as total_orders,
+        COALESCE(SUM(so.total), 0) as total_sales,
+        ROUND(
+          (COUNT(DISTINCT CASE WHEN v.status = 'Completed' THEN v.visit_id END)::numeric / 
+           NULLIF(COUNT(DISTINCT v.visit_id), 0)) * 100, 2
+        ) as strike_rate,
+        COALESCE(SUM(so.total) / NULLIF(COUNT(DISTINCT v.visit_id), 0), 0) as sales_per_visit
+      FROM employee e
+      LEFT JOIN visit v ON v.employee_id = e.employee_id
+      LEFT JOIN sales_order so ON so.visit_id = v.visit_id
+      WHERE e.is_active = true`;
+    
+    const params = [];
+    let paramCount = 0;
+
+    if (start_date && end_date) {
+      paramCount++;
+      query += ` AND v.visit_date >= $${paramCount}`;
+      params.push(start_date);
+      paramCount++;
+      query += ` AND v.visit_date <= $${paramCount}`;
+      params.push(end_date);
+    }
+
+    if (rep_id) {
+      paramCount++;
+      query += ` AND e.employee_id = $${paramCount}`;
+      params.push(rep_id);
+    }
+
+    query += ` GROUP BY e.employee_id, e.name ORDER BY total_sales DESC`;
+
+    const result = await pool.query(query, params);
+
+    // Summary
+    const summaryResult = await pool.query(`
+      SELECT 
+        COUNT(DISTINCT e.employee_id) as total_reps,
+        ROUND(AVG(
+          (COUNT(DISTINCT CASE WHEN v.status = 'Completed' THEN v.visit_id END)::numeric / 
+           NULLIF(COUNT(DISTINCT v.visit_id), 0)) * 100
+        ), 2) as avg_strike_rate,
+        COALESCE(SUM(so.total), 0) as total_sales,
+        COUNT(DISTINCT v.visit_id) as total_visits
+      FROM employee e
+      LEFT JOIN visit v ON v.employee_id = e.employee_id
+      LEFT JOIN sales_order so ON so.visit_id = v.visit_id
+      WHERE e.is_active = true
+      ${start_date && end_date ? `AND v.visit_date >= $1 AND v.visit_date <= $2` : ''}
+      ${rep_id ? `AND e.employee_id = ${start_date && end_date ? 3 : 1}` : ''}
+    `, start_date && end_date ? [start_date, end_date] : rep_id ? [rep_id] : []);
+
+    res.json({
+      summary: summaryResult.rows[0],
+      by_rep: result.rows
+    });
+  } catch (err) {
+    console.error('Error generating performance report:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Global error handler - return JSON for all errors

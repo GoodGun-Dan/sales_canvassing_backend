@@ -5,7 +5,6 @@
 
 # Dependencies
 /node_modules
-package-lock.json
 
 # Logs
 *.log
@@ -23,3 +22,6 @@ Thumbs.db
 scripts/set-dev-passwords.js
 scripts/gen_hashes.js
 fix_passwords.sql
+
+# Local workspace link created by the desktop environment
+Project/

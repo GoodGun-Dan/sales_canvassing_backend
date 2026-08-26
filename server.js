@@ -6,6 +6,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const nodemailer = require('nodemailer');
@@ -45,7 +46,7 @@ try {
 }
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Trust proxy for Railway (reverse proxy) - only trust loopback addresses
 app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
@@ -189,27 +190,6 @@ const upload = multer({
   }
 });
 
-// Error handler untuk multer - return JSON instead of HTML
-app.use((err, req, res, next) => {
-  console.error('Error in request:', err);
-  
-  if (err instanceof multer.MulterError) {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'File terlalu besar. Maksimal 5MB' });
-    }
-    if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-      return res.status(400).json({ error: 'Field file tidak ditemukan' });
-    }
-    return res.status(400).json({ error: err.message });
-  }
-  if (err.message && err.message.includes('Hanya file Excel')) {
-    return res.status(400).json({ error: err.message });
-  }
-  
-  // Return JSON for all errors
-  return res.status(500).json({ error: err.message || 'Internal server error' });
-});
-
 // =====================================================
 // VALIDATION FUNCTIONS
 // =====================================================
@@ -226,6 +206,9 @@ function validatePhone(phone) {
 }
 
 function validatePassword(password) {
+  if (typeof password !== 'string' || password.length === 0) {
+    return { valid: false, message: 'Password is required' };
+  }
   if (password.length < 8) {
     return { valid: false, message: 'Password must be at least 8 characters' };
   }
@@ -243,9 +226,54 @@ function validatePassword(password) {
   return { valid: true };
 }
 
+function validateUsername(username) {
+  return typeof username === 'string' && /^[a-z0-9][a-z0-9._-]{2,49}$/i.test(username);
+}
+
+function validateUserProfile({ name, email, phone, username }) {
+  if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 100) {
+    return 'Name must be between 2 and 100 characters';
+  }
+  if (!validateEmail(email)) return 'Invalid email format';
+  if (phone && !validatePhone(phone)) {
+    return 'Invalid phone number format. Use Indonesian format (e.g., 08123456789 or +628123456789)';
+  }
+  if (username && !validateUsername(username)) {
+    return 'Username must be 3-50 characters and contain only letters, numbers, dot, underscore, or hyphen';
+  }
+  return null;
+}
+
+function validateCoordinates(latitude, longitude) {
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  return Number.isFinite(lat) && Number.isFinite(lng) &&
+      lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
+async function ensureUniqueUserFields(client, { email, phone, username, employeeId = null }) {
+  const duplicate = await client.query(
+    `SELECT e.employee_id, e.email, e.phone, u.username
+     FROM employee e
+     LEFT JOIN user_account u ON u.employee_id = e.employee_id
+     WHERE (LOWER(e.email) = LOWER($1) OR ($2 <> '' AND regexp_replace(COALESCE(e.phone, ''), '[ -]', '', 'g') = $2) OR ($3 <> '' AND LOWER(u.username) = LOWER($3)))
+       AND ($4::integer IS NULL OR e.employee_id <> $4)`,
+    [email.trim(), (phone || '').replace(/[\s-]/g, ''), username || '', employeeId]
+  );
+  const match = duplicate.rows[0];
+  if (!match) return null;
+  if (match.email.toLowerCase() === email.trim().toLowerCase()) return 'Email already exists';
+  if (phone && (match.phone || '').replace(/[\s-]/g, '') === phone.replace(/[\s-]/g, '')) return 'Phone number already exists';
+  return 'Username already exists';
+}
+
+function generateVerificationCode() {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
 async function generateUsername(name, pool) {
   // Generate username from name: lowercase, remove spaces, add random number
-  const baseUsername = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const baseUsername = (name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40) || 'user');
   let username = baseUsername;
   let counter = 1;
   
@@ -524,8 +552,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
   if (!pool) {
     // Mock mode - return success with a fake code
-    const mockCode = Math.floor(100000 + Math.random() * 900000).toString();
-    console.log(`📧 MOCK: Verification code for ${email}: ${mockCode}`);
+    const mockCode = generateVerificationCode();
     return res.json({ 
       success: true, 
       message: 'Verification code sent to your email',
@@ -551,7 +578,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     }
 
     const user = result.rows[0];
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCode = generateVerificationCode();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
 
     // Store verification code - delete existing codes for this employee first
@@ -566,8 +593,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       [user.employee_id, email, verificationCode, expiresAt]
     );
 
-    console.log(`📧 Verification code for ${email}: ${verificationCode}`);
-    
     // Send email with verification code
     if (transporter) {
       try {
@@ -597,7 +622,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         // Continue with response even if email fails (code is stored in DB)
       }
     } else {
-      console.log('⚠️ Email transporter not configured - code logged only');
+      console.warn('⚠️ Email transporter not configured; reset code was not sent.');
     }
 
     res.json({ 
@@ -671,8 +696,9 @@ app.post('/api/auth/reset-password', async (req, res) => {
     return res.status(400).json({ error: 'Email, code, and new password are required' });
   }
 
-  if (newPassword.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  const passwordValidation = validatePassword(newPassword);
+  if (!passwordValidation.valid) {
+    return res.status(400).json({ error: passwordValidation.message });
   }
 
   if (!pool) {
@@ -685,9 +711,9 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
     // Verify code and get employee_id
     const resetResult = await client.query(
-      `SELECT employee_id, used
+      `SELECT employee_id, used, expires_at
        FROM password_reset
-       WHERE email = $1 AND verification_code = $2
+       WHERE email = $1 AND verification_code = $2 AND expires_at > CURRENT_TIMESTAMP
        ORDER BY created_at DESC
        LIMIT 1`,
       [email, code]
@@ -743,15 +769,19 @@ app.put('/api/auth/profile', authenticate, async (req, res) => {
     return res.json({ success: true, name, email, phone });
   }
 
-  if (!name || !email) {
-    return res.status(400).json({ error: 'Name and email required' });
-  }
+  const profileError = validateUserProfile({ name, email, phone });
+  if (profileError) return res.status(400).json({ error: profileError });
 
   try {
-    await pool.query(
+    const duplicateError = await ensureUniqueUserFields(pool, {
+      email, phone, employeeId,
+    });
+    if (duplicateError) return res.status(409).json({ error: duplicateError });
+    const result = await pool.query(
       `UPDATE employee SET name = $1, email = $2, phone = $3 WHERE employee_id = $4`,
       [name, email, phone, employeeId]
     );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ success: true, name, email, phone });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -766,20 +796,9 @@ app.post('/api/auth/change-password', authenticate, async (req, res) => {
     return res.status(400).json({ error: 'Old and new password required' });
   }
 
-  // Password complexity validation
-  if (newPassword.length < 8) {
-    return res.status(400).json({ error: 'Password minimal 8 karakter' });
-  }
-  
-  const hasUpperCase = /[A-Z]/.test(newPassword);
-  const hasLowerCase = /[a-z]/.test(newPassword);
-  const hasNumber = /[0-9]/.test(newPassword);
-  const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(newPassword);
-  
-  if (!hasUpperCase || !hasLowerCase || !hasNumber || !hasSpecialChar) {
-    return res.status(400).json({ 
-      error: 'Password harus mengandung minimal 1 huruf besar, 1 huruf kecil, 1 angka, dan 1 karakter khusus (!@#$%^&*(),.?":{}|<>)' 
-    });
+  const passwordValidation = validatePassword(newPassword);
+  if (!passwordValidation.valid) {
+    return res.status(400).json({ error: passwordValidation.message });
   }
 
   if (!pool) {
@@ -1234,17 +1253,8 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
   const managerId = req.user.employee_id;
 
   // Validation
-  if (!name || !email) {
-    return res.status(400).json({ error: 'Name and email are required' });
-  }
-
-  if (!validateEmail(email)) {
-    return res.status(400).json({ error: 'Invalid email format' });
-  }
-
-  if (phone && !validatePhone(phone)) {
-    return res.status(400).json({ error: 'Invalid phone number format. Use Indonesian format (e.g., 08123456789 or +628123456789)' });
-  }
+  const profileError = validateUserProfile({ name, email, phone, username });
+  if (profileError) return res.status(400).json({ error: profileError });
 
   // Generate username if not provided
   let finalUsername = username;
@@ -1272,24 +1282,12 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
   try {
     await client.query('BEGIN');
 
-    // Check for duplicate email
-    const emailCheck = await client.query(
-      'SELECT employee_id FROM employee WHERE email = $1',
-      [email]
-    );
-    if (emailCheck.rows.length > 0) {
+    const duplicateError = await ensureUniqueUserFields(client, {
+      email, phone, username: finalUsername,
+    });
+    if (duplicateError) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Email already exists' });
-    }
-
-    // Check for duplicate username
-    const usernameCheck = await client.query(
-      'SELECT username FROM user_account WHERE username = $1',
-      [finalUsername]
-    );
-    if (usernameCheck.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Username already exists' });
+      return res.status(409).json({ error: duplicateError });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -1333,22 +1331,13 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
 });
 
 // Add new manager
-app.post('/api/admin/managers', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.post('/api/admin/managers', authenticate, authorize('admin'), async (req, res) => {
   const { name, email, phone, username, password } = req.body;
   const createdBy = req.user.employee_id;
 
   // Validation
-  if (!name || !email) {
-    return res.status(400).json({ error: 'Name and email are required' });
-  }
-
-  if (!validateEmail(email)) {
-    return res.status(400).json({ error: 'Invalid email format' });
-  }
-
-  if (phone && !validatePhone(phone)) {
-    return res.status(400).json({ error: 'Invalid phone number format. Use Indonesian format (e.g., 08123456789 or +628123456789)' });
-  }
+  const profileError = validateUserProfile({ name, email, phone, username });
+  if (profileError) return res.status(400).json({ error: profileError });
 
   // Generate username if not provided
   let finalUsername = username;
@@ -1376,24 +1365,12 @@ app.post('/api/admin/managers', authenticate, authorize('admin', 'manager'), asy
   try {
     await client.query('BEGIN');
 
-    // Check for duplicate email
-    const emailCheck = await client.query(
-      'SELECT employee_id FROM employee WHERE email = $1',
-      [email]
-    );
-    if (emailCheck.rows.length > 0) {
+    const duplicateError = await ensureUniqueUserFields(client, {
+      email, phone, username: finalUsername,
+    });
+    if (duplicateError) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Email already exists' });
-    }
-
-    // Check for duplicate username
-    const usernameCheck = await client.query(
-      'SELECT username FROM user_account WHERE username = $1',
-      [finalUsername]
-    );
-    if (usernameCheck.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Username already exists' });
+      return res.status(409).json({ error: duplicateError });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -1428,28 +1405,49 @@ app.put('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager')
   const repId = req.params.id;
   const { name, email, phone, username, is_active } = req.body;
 
+  if (!Number.isInteger(Number(repId))) {
+    return res.status(400).json({ error: 'Invalid sales rep ID' });
+  }
+  const profileError = validateUserProfile({ name, email, phone, username });
+  if (profileError) return res.status(400).json({ error: profileError });
+
   if (!pool) {
     return res.json({ success: true });
   }
 
+  const client = await pool.connect();
   try {
-    await pool.query('BEGIN');
+    await client.query('BEGIN');
 
-    await pool.query(
+    const duplicateError = await ensureUniqueUserFields(client, {
+      email, phone, username, employeeId: Number(repId),
+    });
+    if (duplicateError) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: duplicateError });
+    }
+
+    const employeeUpdate = await client.query(
       `UPDATE employee SET name = $1, email = $2, phone = $3, is_active = $4 WHERE employee_id = $5`,
       [name, email, phone, is_active !== undefined ? is_active : true, repId]
     );
+    if (employeeUpdate.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Sales rep not found' });
+    }
 
-    await pool.query(
+    await client.query(
       `UPDATE user_account SET username = $1 WHERE employee_id = $2`,
       [username, repId]
     );
 
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
     res.json({ success: true, message: 'Sales rep updated successfully' });
   } catch (err) {
-    await pool.query('ROLLBACK');
+    await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -1932,7 +1930,7 @@ app.get('/api/outlets', authenticate, async (req, res) => {
       if (ready.assignment) {
         query = `
           SELECT DISTINCT o.outlet_id, o.outlet_name, o.address, o.latitude, o.longitude,
-                 o.priority, o.store_type, o.outlet_code, o.credit_limit,
+                 o.priority, o.store_type, o.outlet_code, o.owner_name, o.phone, o.credit_limit,
                  COALESCE(orb.outstanding, 0) as rep_outstanding
           FROM outlet o
           LEFT JOIN outlet_rep_balance orb
@@ -1955,7 +1953,8 @@ app.get('/api/outlets', authenticate, async (req, res) => {
       } else {
         query = `
           SELECT o.outlet_id, o.outlet_name, o.address, o.latitude, o.longitude,
-                 o.priority, o.store_type, o.outlet_code, o.credit_limit, o.outstanding as rep_outstanding
+                 o.priority, o.store_type, o.outlet_code, o.owner_name, o.phone, o.credit_limit,
+                 o.outstanding as rep_outstanding
           FROM outlet o
           WHERE o.is_active = true
           AND o.outlet_id IN (
@@ -1970,7 +1969,8 @@ app.get('/api/outlets', authenticate, async (req, res) => {
       // For admin/manager without rep_id, show ALL active outlets
       query = `
         SELECT o.outlet_id, o.outlet_name, o.address, o.latitude, o.longitude,
-               o.priority, o.store_type, o.outlet_code, o.credit_limit, 0 as rep_outstanding
+               o.priority, o.store_type, o.outlet_code, o.owner_name, o.phone, o.credit_limit,
+               0 as rep_outstanding
         FROM outlet o
         WHERE o.is_active = true
         ORDER BY o.priority ASC, o.outlet_name ASC`;
@@ -1989,6 +1989,14 @@ app.post('/api/outlets', authenticate, authorize('admin', 'manager'), async (req
   if (!outlet_code || !outlet_name || !address) {
     return res.status(400).json({ error: 'Required fields missing' });
   }
+  if (phone && !validatePhone(phone)) {
+    return res.status(400).json({ error: 'Invalid phone number format' });
+  }
+  if ((latitude != null && (Number(latitude) < -90 || Number(latitude) > 90)) ||
+      (longitude != null && (Number(longitude) < -180 || Number(longitude) > 180)) ||
+      Number(credit_limit || 0) < 0 || !['A', 'B', 'C'].includes(priority || 'C')) {
+    return res.status(400).json({ error: 'Invalid outlet data' });
+  }
   try {
     const result = await pool.query(
       `INSERT INTO outlet (outlet_code, outlet_name, address, latitude, longitude, owner_name, phone, credit_limit, priority, store_type, created_by)
@@ -2003,12 +2011,17 @@ app.post('/api/outlets', authenticate, authorize('admin', 'manager'), async (req
 
 app.put('/api/outlets/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const { outlet_name, address, latitude, longitude, owner_name, phone, credit_limit, priority, store_type } = req.body;
+  if (!outlet_name || !address || (phone && !validatePhone(phone)) ||
+      Number(credit_limit || 0) < 0 || !['A', 'B', 'C'].includes(priority)) {
+    return res.status(400).json({ error: 'Invalid outlet data' });
+  }
   try {
-    await pool.query(
+    const result = await pool.query(
       `UPDATE outlet SET outlet_name=$1, address=$2, latitude=$3, longitude=$4, owner_name=$5, phone=$6, credit_limit=$7, priority=$8, store_type=$9
        WHERE outlet_id=$10`,
       [outlet_name, address, latitude, longitude, owner_name, phone, credit_limit, priority, store_type, req.params.id]
     );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Outlet not found' });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2458,17 +2471,21 @@ app.get('/api/orders', authenticate, async (req, res) => {
 });
 
 app.post('/api/orders', authenticate, async (req, res) => {
-  const { outletId, items, paymentMethod, orderType, promotionId, total } = req.body;
+  const { outletId, items: rawItems, paymentMethod, orderType, promotionId } = req.body;
   const employeeId = req.user.employee_id;
   const validTypes = ['Sales', 'Pre-order', 'Return', 'FOC'];
   const type = validTypes.includes(orderType) ? orderType : 'Sales';
 
-  if (!outletId || !items || items.length === 0) {
+  if (!outletId || !Array.isArray(rawItems) || rawItems.length === 0) {
     return res.status(400).json({ error: 'Data tidak lengkap' });
   }
 
   // Validate items structure
-  if (!items.every(item => item.productId && item.quantity && item.price)) {
+  if (!rawItems.every((item) =>
+    Number.isInteger(Number(item.productId)) &&
+    Number.isInteger(Number(item.quantity)) &&
+    Number(item.quantity) > 0
+  )) {
     return res.status(400).json({ error: 'Items structure invalid' });
   }
 
@@ -2479,6 +2496,38 @@ app.post('/api/orders', authenticate, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Sales rep hanya boleh membuat transaksi untuk outlet yang aktif ditugaskan.
+    if (req.user.role === 'rep') {
+      const assignment = await client.query(
+        `SELECT 1 FROM outlet_assignment
+         WHERE outlet_id = $1 AND employee_id = $2 AND is_active = TRUE`,
+        [outletId, employeeId]
+      );
+      if (assignment.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Outlet is not assigned to this sales rep' });
+      }
+    }
+
+    // Harga dan subtotal adalah data server. Jangan percaya nilai harga/total
+    // yang datang dari perangkat karena dapat dimanipulasi.
+    const productIds = [...new Set(rawItems.map((item) => Number(item.productId)))];
+    const products = await client.query(
+      `SELECT product_id, price::numeric AS price FROM product
+       WHERE product_id = ANY($1::int[]) AND is_active = TRUE`,
+      [productIds]
+    );
+    if (products.rows.length !== productIds.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'One or more products are invalid or inactive' });
+    }
+    const prices = new Map(products.rows.map((row) => [row.product_id, Number(row.price)]));
+    const items = rawItems.map((item) => ({
+      productId: Number(item.productId),
+      quantity: Number(item.quantity),
+      price: prices.get(Number(item.productId)),
+    }));
 
     const outletResult = await client.query(
       `SELECT outlet_id, credit_limit, outstanding, outlet_name FROM outlet WHERE outlet_id = $1 AND is_active = true`,
@@ -2517,8 +2566,7 @@ app.post('/api/orders', authenticate, async (req, res) => {
     }
 
     const orderNumber = `SO-${Date.now()}`;
-    // Use total from frontend if provided, otherwise calculate from items
-    let subtotal = total && total > 0 ? total : items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    let subtotal = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
     if (type === 'Return') {
       subtotal = Math.abs(subtotal);
     }
@@ -2559,7 +2607,8 @@ app.post('/api/orders', authenticate, async (req, res) => {
 
     const ready = await tablesReady();
 
-    if (type === 'Sales') {
+    // FOC tetap mengeluarkan barang fisik dari van; hanya nilai tagihannya nol.
+    if (type === 'Sales' || type === 'FOC') {
       for (const item of items) {
         const stockRow = await client.query(
           `SELECT s.quantity, p.product_name FROM stock s
@@ -2615,7 +2664,7 @@ app.post('/api/orders', authenticate, async (req, res) => {
         [orderId, item.productId, item.quantity, item.price]
       );
 
-      if (type === 'Sales') {
+      if (type === 'Sales' || type === 'FOC') {
         await client.query(
           `UPDATE stock SET quantity = GREATEST(0, quantity - $1), last_update = NOW(), updated_by = $2
            WHERE product_id = $3 AND employee_id = $4 AND type = 'van'`,
@@ -3049,6 +3098,10 @@ app.post('/api/collections/pay', authenticate, async (req, res) => {
   if (!orderId || !amount || amount <= 0) {
     return res.status(400).json({ error: 'Invalid payment data' });
   }
+  if (!Number.isInteger(Number(orderId)) || !Number.isFinite(Number(amount)) ||
+      !['Cash', 'Transfer', 'UPI', 'Wallet'].includes(paymentMethod)) {
+    return res.status(400).json({ error: 'Invalid payment data' });
+  }
 
   if (!pool) {
     return res.json({ success: true, referenceNumber: `REF-${Date.now()}` });
@@ -3111,6 +3164,9 @@ app.post('/api/collections/pay', authenticate, async (req, res) => {
       );
       await client.query('COMMIT');
 
+      await createNotification(pool, employeeId, 'payment', 'Payment Recorded',
+        `Payment of ${amount} was recorded successfully.`, result.rows[0].payment_id);
+
       res.json({
         success: true,
         paymentId: result.rows[0].payment_id,
@@ -3131,24 +3187,44 @@ app.post('/api/collections/pay', authenticate, async (req, res) => {
 app.get('/api/collections/history', authenticate, async (req, res) => {
   const employeeId = req.user.employee_id;
   const role = req.user.role;
+  const { start_date, end_date, payment_method } = req.query;
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
 
   if (!pool) return res.json([]);
 
   try {
-    let query, params;
+    let query;
+    const params = [];
     if (role === 'rep') {
       query = `
         SELECT p.payment_id, p.order_id, p.amount, p.payment_method, p.payment_date, p.reference_number
         FROM payment p 
         JOIN sales_order so ON so.order_id = p.order_id 
         JOIN visit v ON v.visit_id = so.visit_id
-        WHERE v.employee_id = $1 
-        ORDER BY p.payment_date DESC LIMIT 50
-      `;
-      params = [employeeId];
+        WHERE v.employee_id = $1`;
+      params.push(employeeId);
     } else {
-      query = `SELECT payment_id, order_id, amount, payment_method, payment_date, reference_number FROM payment ORDER BY payment_date DESC LIMIT 100`;
-      params = [];
+      query = `SELECT payment_id, order_id, amount, payment_method, payment_date, reference_number
+               FROM payment WHERE 1=1`;
+    }
+    if (start_date) {
+      params.push(start_date);
+      query += ` AND DATE(p.payment_date) >= $${params.length}`;
+    }
+    if (end_date) {
+      params.push(end_date);
+      query += ` AND DATE(p.payment_date) <= $${params.length}`;
+    }
+    if (payment_method && ['Cash', 'Transfer', 'UPI', 'Wallet'].includes(payment_method)) {
+      params.push(payment_method);
+      query += ` AND p.payment_method = $${params.length}`;
+    }
+    params.push(limit, offset);
+    query += ` ORDER BY p.payment_date DESC LIMIT $${params.length - 1} OFFSET $${params.length}`;
+    if (role !== 'rep') {
+      // Alias query to keep the shared filter clauses valid for both roles.
+      query = query.replace('FROM payment WHERE', 'FROM payment p WHERE');
     }
     const result = await pool.query(query, params);
     res.json(result.rows);
@@ -3522,8 +3598,12 @@ app.get('/api/supervisor/team-dashboard', authenticate, authorize('supervisor', 
 // =====================================================
 app.post('/api/products', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const { product_code, product_name, product_type, unit_id, min_stock, price } = req.body;
-  if (!product_code || !product_name || !price) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  if (typeof product_code !== 'string' || !/^[A-Za-z0-9._-]{2,50}$/.test(product_code) ||
+      typeof product_name !== 'string' || product_name.trim().length < 2 || product_name.trim().length > 100 ||
+      !['Sparepart', 'Finished Goods'].includes(product_type || 'Finished Goods') ||
+      !Number.isInteger(Number(unit_id || 1)) || !Number.isInteger(Number(min_stock || 0)) || Number(min_stock || 0) < 0 ||
+      !Number.isFinite(Number(price)) || Number(price) <= 0) {
+    return res.status(400).json({ error: 'Invalid product data' });
   }
   try {
     const result = await pool.query(
@@ -3541,18 +3621,27 @@ app.post('/api/products', authenticate, authorize('admin', 'manager'), async (re
     );
     res.status(201).json({ success: true, product_id: result.rows[0].product_id });
   } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Product code already exists' });
     res.status(500).json({ error: err.message });
   }
 });
 
 app.put('/api/products/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const { product_name, product_type, min_stock, price, is_active } = req.body;
+  if (!Number.isInteger(Number(req.params.id)) || typeof product_name !== 'string' ||
+      product_name.trim().length < 2 || product_name.trim().length > 100 ||
+      !['Sparepart', 'Finished Goods'].includes(product_type) ||
+      !Number.isInteger(Number(min_stock)) || Number(min_stock) < 0 ||
+      !Number.isFinite(Number(price)) || Number(price) <= 0 || typeof is_active !== 'boolean') {
+    return res.status(400).json({ error: 'Invalid product data' });
+  }
   try {
-    await pool.query(
+    const result = await pool.query(
       `UPDATE product SET product_name=$1, product_type=$2, min_stock=$3, price=$4, is_active=$5
        WHERE product_id=$6`,
       [product_name, product_type, min_stock, price, is_active !== false, req.params.id]
     );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Product not found' });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3813,8 +3902,11 @@ app.post('/api/visits/checkin', authenticate, async (req, res) => {
   const { outletId, latitude, longitude, visitReason } = req.body;
   const employeeId = req.user.employee_id;
 
-  if (!outletId || !latitude || !longitude) {
+  if (!outletId || latitude === undefined || longitude === undefined) {
     return res.status(400).json({ error: 'Incomplete data' });
+  }
+  if (!Number.isInteger(Number(outletId)) || !validateCoordinates(latitude, longitude)) {
+    return res.status(400).json({ error: 'Invalid outlet or GPS coordinates' });
   }
 
   if (!pool) {
@@ -3822,6 +3914,18 @@ app.post('/api/visits/checkin', authenticate, async (req, res) => {
   }
 
   try {
+    // Penugasan outlet berasal dari manager/admin. Sales rep tidak boleh
+    // membuat assignment sendiri hanya dengan melakukan check-in.
+    if (req.user.role === 'rep') {
+      const assignment = await pool.query(
+        `SELECT 1 FROM outlet_assignment
+         WHERE outlet_id = $1 AND employee_id = $2 AND is_active = TRUE`,
+        [outletId, employeeId]
+      );
+      if (assignment.rows.length === 0) {
+        return res.status(403).json({ error: 'Outlet is not assigned to this sales rep' });
+      }
+    }
     const outletResult = await pool.query(`SELECT latitude, longitude, outlet_name FROM outlet WHERE outlet_id = $1`, [outletId]);
     if (outletResult.rows.length === 0) return res.status(404).json({ error: 'Outlet not found' });
 
@@ -3855,7 +3959,7 @@ app.post('/api/visits/checkin', authenticate, async (req, res) => {
         );
         visitId = result.rows[0].visit_id;
       }
-      if (ready.assignment) {
+      if (ready.assignment && req.user.role !== 'rep') {
         await ensureOutletAssignment(client, outletId, employeeId, employeeId);
       }
       
@@ -3873,6 +3977,8 @@ app.post('/api/visits/checkin', authenticate, async (req, res) => {
       client.release();
     }
 
+    await createNotification(pool, employeeId, 'visit', 'Visit Checked In',
+      `You checked in at "${outlet.outlet_name}".`, visitId);
     res.json({ success: true, message: 'Check-in successful', visitId, distance: distance.toFixed(1), outletName: outlet.outlet_name });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3889,10 +3995,12 @@ app.post('/api/visits/checkout', authenticate, async (req, res) => {
 
   try {
     const result = await pool.query(
-      `UPDATE visit SET check_out_time = CURRENT_TIMESTAMP, status = 'Completed' WHERE visit_id = $1 AND employee_id = $2 RETURNING visit_id`,
+      `UPDATE visit SET check_out_time = CURRENT_TIMESTAMP, status = 'Completed' WHERE visit_id = $1 AND employee_id = $2 RETURNING visit_id, outlet_id`,
       [visitId, employeeId]
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Visit not found' });
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Visit not found' });
+    await createNotification(pool, employeeId, 'visit', 'Visit Completed',
+      'Your outlet visit has been checked out successfully.', result.rows[0].visit_id);
     res.json({ success: true, message: 'Check-out successful' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3906,6 +4014,9 @@ app.post('/api/visits/location', authenticate, async (req, res) => {
 
   if (latitude === undefined || longitude === undefined) {
     return res.status(400).json({ error: 'Latitude and longitude required' });
+  }
+  if (!validateCoordinates(latitude, longitude)) {
+    return res.status(400).json({ error: 'Invalid GPS coordinates' });
   }
 
   if (!pool) {
@@ -3961,8 +4072,12 @@ app.post('/api/team/register', authenticate, authorize('manager', 'admin'), asyn
   const { name, email, phone, username, password, role } = req.body;
   const managerId = req.user.employee_id;
 
-  if (!name || !email || !username || !password) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  const profileError = validateUserProfile({ name, email, phone, username });
+  if (profileError) return res.status(400).json({ error: profileError });
+  const passwordError = validatePassword(password);
+  if (!passwordError.valid) return res.status(400).json({ error: passwordError.message });
+  if (role && role !== 'rep') {
+    return res.status(400).json({ error: 'Team members can only have the sales representative role' });
   }
 
   if (!pool) {
@@ -3972,6 +4087,12 @@ app.post('/api/team/register', authenticate, authorize('manager', 'admin'), asyn
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    const duplicateError = await ensureUniqueUserFields(client, { email, phone, username });
+    if (duplicateError) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: duplicateError });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -4002,19 +4123,6 @@ app.post('/api/team/register', authenticate, authorize('manager', 'admin'), asyn
   } finally {
     client.release();
   }
-});
-
-// =====================================================
-// 404 — route tidak dikenal
-// =====================================================
-app.use((req, res) => {
-  res.status(404).json({
-    error: 'Route not found',
-    method: req.method,
-    path: req.url,
-    hint: 'Gunakan prefix /api — contoh: GET /api/test',
-    coba: `http://localhost:${PORT}/api/test`,
-  });
 });
 
 // =====================================================
@@ -4324,18 +4432,25 @@ app.get('/api/reports/sales', authenticate, authorize('admin', 'manager', 'super
 
     const byProductResult = await pool.query(productQuery, productParams);
 
-    // Summary
-    const summaryResult = await pool.query(`
+    // Summary uses the same bound filters as the detail queries.
+    let summaryQuery = `
       SELECT 
         COUNT(DISTINCT so.order_id) as total_orders,
         COALESCE(SUM(so.total), 0) as total_sales,
         COALESCE(SUM(so.total) / NULLIF(COUNT(DISTINCT so.order_id), 0), 0) as avg_order_value
       FROM sales_order so
       JOIN visit v ON v.visit_id = so.visit_id
-      WHERE 1=1
-      ${start_date && end_date ? `AND DATE(so.order_date) >= $1 AND DATE(so.order_date) <= $2` : ''}
-      ${rep_id ? `AND v.employee_id = ${start_date && end_date ? 3 : 1}` : ''}
-    `, start_date && end_date ? [start_date, end_date] : rep_id ? [rep_id] : []);
+      WHERE 1=1`;
+    const summaryParams = [];
+    if (start_date && end_date) {
+      summaryParams.push(start_date, end_date);
+      summaryQuery += ` AND DATE(so.order_date) >= $1 AND DATE(so.order_date) <= $2`;
+    }
+    if (rep_id) {
+      summaryParams.push(rep_id);
+      summaryQuery += ` AND v.employee_id = $${summaryParams.length}`;
+    }
+    const summaryResult = await pool.query(summaryQuery, summaryParams);
 
     res.json({
       summary: summaryResult.rows[0],
@@ -4431,8 +4546,7 @@ app.get('/api/reports/visits', authenticate, authorize('admin', 'manager', 'supe
 
     const byStatusResult = await pool.query(statusQuery, statusParams);
 
-    // Summary
-    const summaryResult = await pool.query(`
+    let summaryQuery = `
       SELECT 
         COUNT(DISTINCT v.visit_id) as total_visits,
         COUNT(DISTINCT CASE WHEN v.status = 'Completed' THEN v.visit_id END) as completed_visits,
@@ -4442,10 +4556,17 @@ app.get('/api/reports/visits', authenticate, authorize('admin', 'manager', 'supe
            NULLIF(COUNT(DISTINCT v.visit_id), 0)) * 100, 2
         ) as strike_rate
       FROM visit v
-      WHERE 1=1
-      ${start_date && end_date ? `AND v.visit_date >= $1 AND v.visit_date <= $2` : ''}
-      ${rep_id ? `AND v.employee_id = ${start_date && end_date ? 3 : 1}` : ''}
-    `, start_date && end_date ? [start_date, end_date] : rep_id ? [rep_id] : []);
+      WHERE 1=1`;
+    const summaryParams = [];
+    if (start_date && end_date) {
+      summaryParams.push(start_date, end_date);
+      summaryQuery += ` AND v.visit_date >= $1 AND v.visit_date <= $2`;
+    }
+    if (rep_id) {
+      summaryParams.push(rep_id);
+      summaryQuery += ` AND v.employee_id = $${summaryParams.length}`;
+    }
+    const summaryResult = await pool.query(summaryQuery, summaryParams);
 
     res.json({
       summary: summaryResult.rows[0],
@@ -4510,26 +4631,22 @@ app.get('/api/reports/performance', authenticate, authorize('admin', 'manager', 
 
     const result = await pool.query(query, params);
 
-    // Summary
-    const summaryResult = await pool.query(`
-      SELECT 
-        COUNT(DISTINCT e.employee_id) as total_reps,
-        ROUND(AVG(
-          (COUNT(DISTINCT CASE WHEN v.status = 'Completed' THEN v.visit_id END)::numeric / 
-           NULLIF(COUNT(DISTINCT v.visit_id), 0)) * 100
-        ), 2) as avg_strike_rate,
-        COALESCE(SUM(so.total), 0) as total_sales,
-        COUNT(DISTINCT v.visit_id) as total_visits
-      FROM employee e
-      LEFT JOIN visit v ON v.employee_id = e.employee_id
-      LEFT JOIN sales_order so ON so.visit_id = v.visit_id
-      WHERE e.is_active = true
-      ${start_date && end_date ? `AND v.visit_date >= $1 AND v.visit_date <= $2` : ''}
-      ${rep_id ? `AND e.employee_id = ${start_date && end_date ? 3 : 1}` : ''}
-    `, start_date && end_date ? [start_date, end_date] : rep_id ? [rep_id] : []);
+    // `result` is already grouped per rep, therefore this avoids invalid
+    // nested aggregates and guarantees summary uses identical filters.
+    const summary = result.rows.reduce((acc, row) => {
+      acc.total_reps += 1;
+      acc.total_sales += Number(row.total_sales || 0);
+      acc.total_visits += Number(row.total_visits || 0);
+      acc.total_strike_rate += Number(row.strike_rate || 0);
+      return acc;
+    }, { total_reps: 0, total_sales: 0, total_visits: 0, total_strike_rate: 0 });
+    summary.avg_strike_rate = summary.total_reps
+      ? Number((summary.total_strike_rate / summary.total_reps).toFixed(2))
+      : 0;
+    delete summary.total_strike_rate;
 
     res.json({
-      summary: summaryResult.rows[0],
+      summary,
       by_rep: result.rows
     });
   } catch (err) {
@@ -4538,12 +4655,31 @@ app.get('/api/reports/performance', authenticate, authorize('admin', 'manager', 
   }
 });
 
+// 404 harus didaftarkan setelah seluruh route, termasuk notifikasi dan laporan.
+app.use((req, res) => {
+  res.status(404).json({
+    error: 'Route not found',
+    method: req.method,
+    path: req.url,
+    hint: 'Gunakan prefix /api — contoh: GET /api/test',
+  });
+});
+
 // Global error handler - return JSON for all errors
 app.use((err, req, res, next) => {
   console.error('Error in request:', err);
-  
-  // Return JSON for all errors instead of HTML
-  return res.status(err.status || 500).json({ 
+  if (err instanceof multer.MulterError) {
+    const message = err.code === 'LIMIT_FILE_SIZE'
+      ? 'File terlalu besar. Maksimal 5MB'
+      : err.code === 'LIMIT_UNEXPECTED_FILE'
+        ? 'Field file tidak ditemukan'
+        : err.message;
+    return res.status(400).json({ error: message });
+  }
+  if (err.message?.includes('Hanya file Excel')) {
+    return res.status(400).json({ error: err.message });
+  }
+  return res.status(err.status || 500).json({
     error: err.message || 'Internal server error'
   });
 });

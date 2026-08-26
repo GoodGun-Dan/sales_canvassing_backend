@@ -1,5 +1,6 @@
 -- Hapus semua tabel jika ada (start fresh)
 DROP TABLE IF EXISTS stock_history CASCADE;
+DROP TABLE IF EXISTS notification CASCADE;
 DROP TABLE IF EXISTS promotion CASCADE;
 DROP TABLE IF EXISTS merchandising_audit CASCADE;
 DROP TABLE IF EXISTS payment CASCADE;
@@ -62,6 +63,15 @@ CREATE TABLE user_account (
     last_login TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Proteksi duplikasi juga harus ada di database, bukan hanya di aplikasi.
+-- Email dan username tidak membedakan huruf besar/kecil; nomor telepon
+-- dibandingkan setelah spasi dan tanda hubung dihapus.
+CREATE UNIQUE INDEX uq_employee_email_ci ON employee (LOWER(email));
+CREATE UNIQUE INDEX uq_user_account_username_ci ON user_account (LOWER(username));
+CREATE UNIQUE INDEX uq_employee_phone_normalized
+    ON employee ((regexp_replace(phone, '[[:space:]-]', '', 'g')))
+    WHERE phone IS NOT NULL AND btrim(phone) <> '';
 
 -- Team
 CREATE TABLE team (
@@ -277,9 +287,11 @@ CREATE TABLE promotion (
 -- =====================================================
 
 CREATE INDEX idx_visit_employee_date ON visit(employee_id, visit_date);
+CREATE INDEX idx_visit_employee_status_date ON visit(employee_id, status, visit_date);
 CREATE INDEX idx_visit_outlet ON visit(outlet_id);
 CREATE INDEX idx_sales_order_visit ON sales_order(visit_id);
 CREATE INDEX idx_sales_order_date ON sales_order(order_date);
+CREATE INDEX idx_sales_order_visit_date ON sales_order(visit_id, order_date);
 CREATE INDEX idx_order_detail_order ON order_detail(order_id);
 CREATE INDEX idx_order_detail_product ON order_detail(product_id);
 CREATE INDEX idx_payment_order ON payment(order_id);
@@ -294,6 +306,7 @@ CREATE INDEX idx_employee_location ON employee(last_location_update, last_lat, l
 CREATE INDEX idx_password_reset_email_code ON password_reset(email, verification_code);
 CREATE INDEX idx_password_reset_employee ON password_reset(employee_id);
 CREATE INDEX idx_outlet_assignment_employee ON outlet_assignment(employee_id);
+CREATE INDEX idx_outlet_assignment_employee_active ON outlet_assignment(employee_id, is_active);
 CREATE INDEX idx_outlet_assignment_outlet ON outlet_assignment(outlet_id);
 CREATE INDEX idx_outlet_rep_balance_employee ON outlet_rep_balance(employee_id);
 CREATE INDEX idx_outlet_rep_balance_outlet ON outlet_rep_balance(outlet_id);
@@ -316,10 +329,10 @@ INSERT INTO employee (nik, name, email, phone, section_id, position) VALUES
 
 -- User Account - DIPERBAIKI: Valid bcrypt hashes
 INSERT INTO user_account (employee_id, username, password_hash, role, company_email, is_verified) VALUES
-(1, 'admin', '$2b$10$LVKmUfLkhFswYx74BfFSFef79s.mdrEs6ZrDAbihIf1FJqs6o/D/y', 'admin', 'admin@company.com', TRUE),
-(2, 'manager', '$2b$10$HZpEFqXrr7GgCbOggc96UO7cEplBkVdAcwCICsr6fSXO8UrKQpR1u', 'manager', 'manager.jkt@company.com', TRUE),
-(3, 'repa', '$2b$10$G6j/8wH/Shbd5hCf1i2DoObVTBQ4ENanYGiiT.OBGgTJE0vkgJ9OK', 'rep', 'rep.a@company.com', TRUE),
-(4, 'repb', '$2b$10$MarCNev0mWRc9kUWaQv8CeQ289J2R8V2MQUwydjtunkuuDx169XN6', 'rep', 'rep.b@company.com', TRUE);
+(1, 'admin', '$2b$10$XLUYQEWZYcq/JvdUdIzp0.rUViy1OnThZamL2v.exnbQb3ok7Kcj.', 'admin', 'admin@company.com', TRUE),
+(2, 'manager', '$2b$10$La.jMKNJjW6r1wNgR3MNauo7qG3tHZk.sDMVjuWgGXaHXNn2Tu/Y6', 'manager', 'manager.jkt@company.com', TRUE),
+(3, 'repa', '$2b$10$F.S5m9jYsD8ktvDuSGIIiOvhCN6nNNryZZbfdMf5SFps1tVDt3HR2', 'rep', 'rep.a@company.com', TRUE),
+(4, 'repb', '$2b$10$7Xwa5TBGcjexNZpfYZ.KG.fJw.NUzpWA8wBxm93U8v.2bg.ySbzw6', 'rep', 'rep.b@company.com', TRUE);
 
 -- Team
 INSERT INTO team (team_name, manager_id, company_domain, description) VALUES
@@ -430,7 +443,7 @@ INSERT INTO employee (nik, name, email, phone, section_id, position) VALUES
 ('SUP001', 'Supervisor Jakarta', 'supervisor@company.com', '08123456786', 1, 'Sales Supervisor');
 
 INSERT INTO user_account (employee_id, username, password_hash, role, manager_id, is_verified) VALUES
-(5, 'supervisor', '$2b$10$1EvySRUrdPwxaj16Q9/v2OmEtJ11oc2l/c6C0aieMWsE.R9pXv0VK', 'supervisor', 2, TRUE);
+(5, 'supervisor', '$2b$10$ApHrRXO.fwF8ofBXvgUsB.N9Q.L2zfc5UnaVNzDv1dP5LclAA9Xcy', 'supervisor', 2, TRUE);
 
 INSERT INTO team_member (team_id, employee_id) VALUES
 (1, 5);

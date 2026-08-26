@@ -1,6 +1,7 @@
 -- =====================================================
--- MIGRASI V2: hubungkan modul + isolasi data per sales rep
--- Jalankan di pgAdmin (database: sales_canvassing) SETELAH script utama
+-- DEPRECATED: seluruh struktur dan index di file ini telah digabungkan ke
+-- ../database_schema_fixed.sql. Gunakan file utama itu untuk database Supabase baru.
+-- File ini hanya disimpan untuk membantu upgrade database lama yang sudah ada.
 -- =====================================================
 
 -- 1. Assignment outlet permanen per sales rep
@@ -16,6 +17,10 @@ CREATE TABLE IF NOT EXISTS outlet_assignment (
 
 CREATE INDEX IF NOT EXISTS idx_outlet_assignment_employee ON outlet_assignment(employee_id);
 CREATE INDEX IF NOT EXISTS idx_outlet_assignment_outlet ON outlet_assignment(outlet_id);
+CREATE INDEX IF NOT EXISTS idx_outlet_assignment_employee_active ON outlet_assignment(employee_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_visit_employee_status_date ON visit(employee_id, status, visit_date);
+CREATE INDEX IF NOT EXISTS idx_sales_order_visit_date ON sales_order(visit_id, order_date);
+CREATE INDEX IF NOT EXISTS idx_payment_order ON payment(order_id);
 
 -- 2. Outstanding piutang per rep per outlet (bukan global)
 CREATE TABLE IF NOT EXISTS outlet_rep_balance (

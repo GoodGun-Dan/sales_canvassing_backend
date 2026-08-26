@@ -235,7 +235,10 @@ function validateUserProfile({ name, email, phone, username }) {
     return 'Name must be between 2 and 100 characters';
   }
   if (!validateEmail(email)) return 'Invalid email format';
-  if (phone && !validatePhone(phone)) {
+  if (typeof phone !== 'string' || phone.trim() === '') {
+    return 'Phone number is required';
+  }
+  if (!validatePhone(phone)) {
     return 'Invalid phone number format. Use Indonesian format (e.g., 08123456789 or +628123456789)';
   }
   if (username && !validateUsername(username)) {
@@ -864,14 +867,6 @@ app.get('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), as
       WHERE u.role = 'rep'`;
     const params = [];
 
-    if (req.user.role === 'manager') {
-      const teamIds = await getTeamEmployeeIds(req.user.employee_id);
-      if (teamIds && teamIds.length > 0) {
-        params.push(teamIds);
-        query += ` AND e.employee_id = ANY($1::int[])`;
-      }
-    }
-
     query += `
       GROUP BY e.employee_id, e.name, e.email, e.phone, e.created_at, u.username, u.role, u.is_verified, e.is_active
       ORDER BY e.name`;
@@ -1248,7 +1243,8 @@ app.get('/api/admin/sales-reps/:id/transactions', authenticate, authorize('admin
 });
 
 // Add new sales rep
-app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), async (req, res) => {
+// Admin handles daily operations; only manager may change the team roster.
+app.post('/api/admin/sales-reps', authenticate, authorize('manager'), async (req, res) => {
   const { name, email, phone, username, password } = req.body;
   const managerId = req.user.employee_id;
 
@@ -1324,6 +1320,9 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error adding sales rep:', err);
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'Email, phone number, or username already exists' });
+    }
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
@@ -1331,7 +1330,8 @@ app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), a
 });
 
 // Add new manager
-app.post('/api/admin/managers', authenticate, authorize('admin'), async (req, res) => {
+// Manager is the highest role and is the only role allowed to create admins.
+app.post('/api/manager/admins', authenticate, authorize('manager'), async (req, res) => {
   const { name, email, phone, username, password } = req.body;
   const createdBy = req.user.employee_id;
 
@@ -1358,7 +1358,7 @@ app.post('/api/admin/managers', authenticate, authorize('admin'), async (req, re
   }
 
   if (!pool) {
-    return res.status(201).json({ success: true, message: 'Manager added (mock)', employee_id: Date.now(), username: finalUsername });
+    return res.status(201).json({ success: true, message: 'Admin added (mock)', employee_id: Date.now(), username: finalUsername });
   }
 
   const client = await pool.connect();
@@ -1377,7 +1377,7 @@ app.post('/api/admin/managers', authenticate, authorize('admin'), async (req, re
 
     const employeeResult = await client.query(
       `INSERT INTO employee (nik, name, email, phone, created_by, position)
-       VALUES ($1, $2, $3, $4, $5, 'Manager')
+       VALUES ($1, $2, $3, $4, $5, 'Administrator')
        RETURNING employee_id`,
       [`EMP-${Date.now()}`, name, email, phone, createdBy]
     );
@@ -1385,15 +1385,20 @@ app.post('/api/admin/managers', authenticate, authorize('admin'), async (req, re
 
     await client.query(
       `INSERT INTO user_account (employee_id, username, password_hash, role, is_verified)
-       VALUES ($1, $2, $3, 'manager', true)`,
+       VALUES ($1, $2, $3, 'admin', true)`,
       [employeeId, finalUsername, hashedPassword]
     );
 
     await client.query('COMMIT');
-    res.status(201).json({ success: true, message: 'Manager added successfully', employee_id: employeeId, username: finalUsername });
+    await createNotification(pool, createdBy, 'user', 'Admin Added',
+      `Admin ${name} has been added successfully.`, employeeId);
+    res.status(201).json({ success: true, message: 'Admin added successfully', employee_id: employeeId, username: finalUsername });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error adding manager:', err);
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'Email, phone number, or username already exists' });
+    }
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
@@ -1401,7 +1406,7 @@ app.post('/api/admin/managers', authenticate, authorize('admin'), async (req, re
 });
 
 // Update sales rep
-app.put('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.put('/api/admin/sales-reps/:id', authenticate, authorize('manager'), async (req, res) => {
   const repId = req.params.id;
   const { name, email, phone, username, is_active } = req.body;
 
@@ -1532,7 +1537,7 @@ app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, a
 });
 
 // Delete sales rep (soft delete)
-app.delete('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.delete('/api/admin/sales-reps/:id', authenticate, authorize('manager'), async (req, res) => {
   const repId = req.params.id;
 
   if (!pool) {
@@ -4042,7 +4047,7 @@ app.post('/api/visits/location', authenticate, async (req, res) => {
 // =====================================================
 // TEAM MANAGEMENT (MANAGER ONLY)
 // =====================================================
-app.get('/api/team/members', authenticate, authorize('manager', 'admin', 'supervisor'), async (req, res) => {
+app.get('/api/team/members', authenticate, authorize('manager'), async (req, res) => {
   const managerId = req.user.employee_id;
 
   if (!pool) {
@@ -4068,7 +4073,7 @@ app.get('/api/team/members', authenticate, authorize('manager', 'admin', 'superv
   }
 });
 
-app.post('/api/team/register', authenticate, authorize('manager', 'admin'), async (req, res) => {
+app.post('/api/team/register', authenticate, authorize('manager'), async (req, res) => {
   const { name, email, phone, username, password, role } = req.body;
   const managerId = req.user.employee_id;
 
@@ -4316,7 +4321,7 @@ app.get('/api/notifications/unread-count', authenticate, async (req, res) => {
 // =====================================================
 
 // Generate Sales Report
-app.get('/api/reports/sales', authenticate, authorize('admin', 'manager', 'supervisor'), async (req, res) => {
+app.get('/api/reports/sales', authenticate, authorize('manager'), async (req, res) => {
   const { start_date, end_date, rep_id } = req.query;
   
   if (!pool) {
@@ -4465,7 +4470,7 @@ app.get('/api/reports/sales', authenticate, authorize('admin', 'manager', 'super
 });
 
 // Generate Visit Report
-app.get('/api/reports/visits', authenticate, authorize('admin', 'manager', 'supervisor'), async (req, res) => {
+app.get('/api/reports/visits', authenticate, authorize('manager'), async (req, res) => {
   const { start_date, end_date, rep_id } = req.query;
   
   if (!pool) {
@@ -4580,7 +4585,7 @@ app.get('/api/reports/visits', authenticate, authorize('admin', 'manager', 'supe
 });
 
 // Generate Performance Report
-app.get('/api/reports/performance', authenticate, authorize('admin', 'manager', 'supervisor'), async (req, res) => {
+app.get('/api/reports/performance', authenticate, authorize('manager'), async (req, res) => {
   const { start_date, end_date, rep_id } = req.query;
   
   if (!pool) {

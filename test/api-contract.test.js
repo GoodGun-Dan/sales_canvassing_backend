@@ -52,6 +52,13 @@ test('dashboard supervisor tidak membuka fitur manager yang ditolak API', () => 
   assert.doesNotMatch(supervisorDashboardSource, /ManagerOutletScreen/);
 });
 
+test('manager dan admin memiliki otoritas yang berbeda', () => {
+  assert.match(serverSource, /app\.post\('\/api\/manager\/admins', authenticate, authorize\('manager'\)/);
+  assert.match(serverSource, /app\.post\('\/api\/admin\/sales-reps', authenticate, authorize\('manager'\)/);
+  assert.match(serverSource, /app\.get\('\/api\/reports\/sales', authenticate, authorize\('manager'\)/);
+  assert.match(serverSource, /app\.post\('\/api\/admin\/sales-reps\/:id\/assign-outlet', authenticate, authorize\('admin', 'manager'\)/);
+});
+
 test('reset password menggunakan kode acak kriptografis dan masa berlaku', () => {
   assert.match(serverSource, /crypto\.randomInt\(100000, 1000000\)/);
   assert.match(serverSource, /expires_at > CURRENT_TIMESTAMP/);

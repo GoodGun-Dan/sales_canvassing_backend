@@ -3421,16 +3421,17 @@ app.get('/api/visits/today', authenticate, async (req, res) => {
       `;
       params = [employeeId];
     } else {
+      const hasRepFilter = Number.isInteger(repId) && req.query.rep_id != null;
       query = `
         SELECT v.visit_id, v.outlet_id, o.outlet_name, o.address, v.visit_time, v.status,
-               v.check_in_time, v.check_out_time, v.visit_reason, o.priority, e.name as sales_name
+               v.visit_date, v.check_in_time, v.check_out_time, v.visit_reason, o.priority, e.name as sales_name
         FROM visit v
         JOIN outlet o ON o.outlet_id = v.outlet_id
         JOIN employee e ON e.employee_id = v.employee_id
-        WHERE v.employee_id = $1 AND v.visit_date = CURRENT_DATE
+        WHERE ${hasRepFilter ? 'v.employee_id = $1 AND' : ''} v.visit_date = CURRENT_DATE
         ORDER BY v.visit_time
       `;
-      params = [repId];
+      params = hasRepFilter ? [repId] : [];
     }
 
     const result = await pool.query(query, params);
@@ -4321,7 +4322,7 @@ app.get('/api/notifications/unread-count', authenticate, async (req, res) => {
 // =====================================================
 
 // Generate Sales Report
-app.get('/api/reports/sales', authenticate, authorize('manager'), async (req, res) => {
+app.get('/api/reports/sales', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const { start_date, end_date, rep_id } = req.query;
   
   if (!pool) {
@@ -4470,7 +4471,7 @@ app.get('/api/reports/sales', authenticate, authorize('manager'), async (req, re
 });
 
 // Generate Visit Report
-app.get('/api/reports/visits', authenticate, authorize('manager'), async (req, res) => {
+app.get('/api/reports/visits', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const { start_date, end_date, rep_id } = req.query;
   
   if (!pool) {
@@ -4585,7 +4586,7 @@ app.get('/api/reports/visits', authenticate, authorize('manager'), async (req, r
 });
 
 // Generate Performance Report
-app.get('/api/reports/performance', authenticate, authorize('manager'), async (req, res) => {
+app.get('/api/reports/performance', authenticate, authorize('admin', 'manager'), async (req, res) => {
   const { start_date, end_date, rep_id } = req.query;
   
   if (!pool) {
@@ -4659,6 +4660,85 @@ app.get('/api/reports/performance', authenticate, authorize('manager'), async (r
     res.status(500).json({ error: err.message });
   }
 });
+
+// Download report as an Excel workbook or a portable PDF document.
+// The endpoint deliberately uses the same role permissions as the on-screen reports.
+app.get('/api/reports/:type/download', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  const type = req.params.type.toLowerCase();
+  const format = (req.query.format || 'xlsx').toLowerCase();
+  const { start_date, end_date } = req.query;
+  if (!['sales', 'visits', 'performance'].includes(type) || !['xlsx', 'pdf'].includes(format)) {
+    return res.status(400).json({ error: 'Invalid report type or format' });
+  }
+
+  const title = `${type[0].toUpperCase()}${type.slice(1)} Report`;
+  const period = `${start_date || 'all'} to ${end_date || 'all'}`;
+  if (!pool) {
+    const rows = [{ report: title, period, message: 'Demo report data' }];
+    return sendReportDownload(res, { title, period, rows, format });
+  }
+
+  const params = [];
+  const dateFilter = (column) => {
+    const conditions = [];
+    if (start_date) { params.push(start_date); conditions.push(`${column} >= $${params.length}`); }
+    if (end_date) { params.push(end_date); conditions.push(`${column} <= $${params.length}`); }
+    return conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+  };
+
+  try {
+    let query;
+    if (type === 'sales') {
+      query = `SELECT so.order_number, e.name AS sales_rep, o.outlet_name, so.order_date::date AS order_date, so.total
+        FROM sales_order so JOIN visit v ON v.visit_id = so.visit_id
+        JOIN employee e ON e.employee_id = v.employee_id JOIN outlet o ON o.outlet_id = v.outlet_id` + dateFilter('so.order_date') + ' ORDER BY so.order_date DESC';
+    } else if (type === 'visits') {
+      query = `SELECT e.name AS sales_rep, o.outlet_name, v.visit_date, v.visit_time, v.status
+        FROM visit v JOIN employee e ON e.employee_id = v.employee_id
+        JOIN outlet o ON o.outlet_id = v.outlet_id` + dateFilter('v.visit_date') + ' ORDER BY v.visit_date DESC, v.visit_time';
+    } else {
+      query = `SELECT e.name AS sales_rep, COUNT(v.visit_id) AS total_visits,
+        COUNT(*) FILTER (WHERE v.status = 'Completed') AS completed_visits,
+        COALESCE(SUM(so.total), 0) AS total_sales
+        FROM employee e LEFT JOIN visit v ON v.employee_id = e.employee_id
+        LEFT JOIN sales_order so ON so.visit_id = v.visit_id` + dateFilter('v.visit_date') +
+        ` GROUP BY e.employee_id, e.name ORDER BY total_sales DESC`;
+    }
+    const result = await pool.query(query, params);
+    return sendReportDownload(res, { title, period, rows: result.rows, format });
+  } catch (err) {
+    console.error('Error downloading report:', err);
+    return res.status(500).json({ error: 'Failed to generate report download' });
+  }
+});
+
+function sendReportDownload(res, { title, period, rows, format }) {
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  if (format === 'xlsx') {
+    const workbook = XLSX.utils.book_new();
+    const sheetRows = [{ Report: title, Period: period }, {}, ...(rows.length ? rows : [{ message: 'No data for the selected period' }])];
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(sheetRows), 'Report');
+    const content = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${title.replace(/\\s+/g, '_')}_${dateStamp}.xlsx"`);
+    return res.send(content);
+  }
+
+  const header = rows.length ? Object.keys(rows[0]) : ['message'];
+  const textRows = [title, `Period: ${period}`, '', header.join(' | '), ...rows.map((row) => header.map((key) => String(row[key] ?? '')).join(' | '))];
+  const escapePdf = (value) => value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+  const lines = textRows.flatMap((line) => String(line).match(/.{1,95}/g) || ['']);
+  const stream = `BT /F1 10 Tf 45 800 Td ${lines.map((line, index) => `${index ? '0 -14 Td ' : ''}(${escapePdf(line)}) Tj`).join('\n')} ET`;
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>', `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  objects.forEach((object, index) => { offsets.push(Buffer.byteLength(pdf)); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${title.replace(/\\s+/g, '_')}_${dateStamp}.pdf"`);
+  return res.send(Buffer.from(pdf, 'utf8'));
+}
 
 // 404 harus didaftarkan setelah seluruh route, termasuk notifikasi dan laporan.
 app.use((req, res) => {

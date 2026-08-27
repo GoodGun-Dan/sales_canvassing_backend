@@ -866,6 +866,14 @@ app.get('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), as
       LEFT JOIN sales_order so ON so.visit_id = v.visit_id
       WHERE u.role = 'rep'`;
     const params = [];
+    if (req.user.role === 'manager') {
+      params.push(req.user.employee_id);
+      query += ` AND EXISTS (
+        SELECT 1 FROM team_member tm
+        JOIN team t ON t.team_id = tm.team_id
+        WHERE tm.employee_id = e.employee_id AND t.manager_id = $${params.length}
+      )`;
+    }
 
     query += `
       GROUP BY e.employee_id, e.name, e.email, e.phone, e.created_at, u.username, u.role, u.is_verified, e.is_active
@@ -879,8 +887,24 @@ app.get('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), as
   }
 });
 
+// Admin uses this list when assigning a new sales rep to a manager.
+app.get('/api/admin/managers', authenticate, authorize('admin'), async (req, res) => {
+  if (!pool) return res.json([{ employee_id: 2, name: 'Manager', username: 'manager' }]);
+  try {
+    const result = await pool.query(
+      `SELECT e.employee_id, e.name, e.email, e.phone, u.username
+       FROM employee e JOIN user_account u ON u.employee_id = e.employee_id
+       WHERE u.role = 'manager' AND e.is_active = TRUE
+       ORDER BY e.name`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get single sales rep details
-app.get('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = req.params.id;
   
   if (!pool) {
@@ -914,7 +938,7 @@ app.get('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager')
 });
 
 // Get complete dashboard data for a specific sales rep (for admin/manager viewing)
-app.get('/api/admin/sales-reps/:id/dashboard', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id/dashboard', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = req.params.id;
   
   if (!pool) {
@@ -978,7 +1002,7 @@ app.get('/api/admin/sales-reps/:id/dashboard', authenticate, authorize('admin', 
 });
 
 // Get sales rep last check-in or live location for today (for admin/manager viewing)
-app.get('/api/admin/sales-reps/:id/location', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id/location', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = parseInt(req.params.id, 10);
   
   if (!pool) {
@@ -1032,7 +1056,7 @@ app.get('/api/admin/sales-reps/:id/location', authenticate, authorize('admin', '
 
 
 // Get all orders for a specific sales rep (for admin/manager viewing)
-app.get('/api/admin/sales-reps/:id/orders', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id/orders', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = req.params.id;
   
   if (!pool) {
@@ -1056,7 +1080,7 @@ app.get('/api/admin/sales-reps/:id/orders', authenticate, authorize('admin', 'ma
 });
 
 // Get all payments for a specific sales rep (for admin/manager viewing)
-app.get('/api/admin/sales-reps/:id/payments', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id/payments', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = req.params.id;
   
   if (!pool) {
@@ -1080,7 +1104,7 @@ app.get('/api/admin/sales-reps/:id/payments', authenticate, authorize('admin', '
 });
 
 // Get analytics for a specific sales rep (for admin/manager viewing)
-app.get('/api/admin/sales-reps/:id/analytics', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id/analytics', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = req.params.id;
   const days = parseInt(req.query.days) || 7;
   const startDate = req.query.start_date;
@@ -1179,7 +1203,7 @@ app.get('/api/admin/sales-reps/:id/analytics', authenticate, authorize('admin', 
 });
 
 // Get transactions for a specific sales rep (for admin/manager viewing)
-app.get('/api/admin/sales-reps/:id/transactions', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id/transactions', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = req.params.id;
   const startDate = req.query.start_date;
   const endDate = req.query.end_date;
@@ -1244,9 +1268,20 @@ app.get('/api/admin/sales-reps/:id/transactions', authenticate, authorize('admin
 
 // Add new sales rep
 // Admin handles daily operations; only manager may change the team roster.
-app.post('/api/admin/sales-reps', authenticate, authorize('manager'), async (req, res) => {
-  const { name, email, phone, username, password } = req.body;
-  const managerId = req.user.employee_id;
+app.post('/api/admin/sales-reps', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  const { name, email, phone, username, password, manager_id } = req.body;
+  const managerId = req.user.role === 'manager' ? req.user.employee_id : Number(manager_id);
+
+  if (!Number.isInteger(managerId)) {
+    return res.status(400).json({ error: 'Admin must select a manager for this sales rep' });
+  }
+
+  if (pool && req.user.role === 'admin') {
+    const manager = await pool.query(
+      `SELECT 1 FROM user_account WHERE employee_id = $1 AND role = 'manager'`, [managerId]
+    );
+    if (manager.rowCount === 0) return res.status(400).json({ error: 'Selected manager was not found' });
+  }
 
   // Validation
   const profileError = validateUserProfile({ name, email, phone, username });
@@ -1308,6 +1343,16 @@ app.post('/api/admin/sales-reps', authenticate, authorize('manager'), async (req
         `INSERT INTO team_member (team_id, employee_id) VALUES ($1, $2)`,
         [teamResult.rows[0].team_id, employeeId]
       );
+    } else {
+      const newTeam = await client.query(
+        `INSERT INTO team (team_name, manager_id, company_domain, description)
+         VALUES ($1, $2, $3, 'Team created while adding sales rep') RETURNING team_id`,
+        [`Manager ${managerId} Team`, managerId, '@company.com']
+      );
+      await client.query(
+        `INSERT INTO team_member (team_id, employee_id) VALUES ($1, $2)`,
+        [newTeam.rows[0].team_id, employeeId]
+      );
     }
 
     await client.query('COMMIT');
@@ -1329,9 +1374,8 @@ app.post('/api/admin/sales-reps', authenticate, authorize('manager'), async (req
   }
 });
 
-// Add new manager
-// Manager is the highest role and is the only role allowed to create admins.
-app.post('/api/manager/admins', authenticate, authorize('manager'), async (req, res) => {
+// Only the single admin account can create manager accounts.
+app.post('/api/admin/managers', authenticate, authorize('admin'), async (req, res) => {
   const { name, email, phone, username, password } = req.body;
   const createdBy = req.user.employee_id;
 
@@ -1358,7 +1402,7 @@ app.post('/api/manager/admins', authenticate, authorize('manager'), async (req, 
   }
 
   if (!pool) {
-    return res.status(201).json({ success: true, message: 'Admin added (mock)', employee_id: Date.now(), username: finalUsername });
+    return res.status(201).json({ success: true, message: 'Manager added (mock)', employee_id: Date.now(), username: finalUsername });
   }
 
   const client = await pool.connect();
@@ -1377,7 +1421,7 @@ app.post('/api/manager/admins', authenticate, authorize('manager'), async (req, 
 
     const employeeResult = await client.query(
       `INSERT INTO employee (nik, name, email, phone, created_by, position)
-       VALUES ($1, $2, $3, $4, $5, 'Administrator')
+       VALUES ($1, $2, $3, $4, $5, 'Sales Manager')
        RETURNING employee_id`,
       [`EMP-${Date.now()}`, name, email, phone, createdBy]
     );
@@ -1385,14 +1429,20 @@ app.post('/api/manager/admins', authenticate, authorize('manager'), async (req, 
 
     await client.query(
       `INSERT INTO user_account (employee_id, username, password_hash, role, is_verified)
-       VALUES ($1, $2, $3, 'admin', true)`,
+       VALUES ($1, $2, $3, 'manager', true)`,
       [employeeId, finalUsername, hashedPassword]
     );
 
+    await client.query(
+      `INSERT INTO team (team_name, manager_id, company_domain, description)
+       VALUES ($1, $2, $3, 'Team created for manager')`,
+      [`${name} Team`, employeeId, '@company.com']
+    );
+
     await client.query('COMMIT');
-    await createNotification(pool, createdBy, 'user', 'Admin Added',
-      `Admin ${name} has been added successfully.`, employeeId);
-    res.status(201).json({ success: true, message: 'Admin added successfully', employee_id: employeeId, username: finalUsername });
+    await createNotification(pool, createdBy, 'user', 'Manager Added',
+      `Manager ${name} has been added successfully.`, employeeId);
+    res.status(201).json({ success: true, message: 'Manager added successfully', employee_id: employeeId, username: finalUsername });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error adding manager:', err);
@@ -1406,7 +1456,7 @@ app.post('/api/manager/admins', authenticate, authorize('manager'), async (req, 
 });
 
 // Update sales rep
-app.put('/api/admin/sales-reps/:id', authenticate, authorize('manager'), async (req, res) => {
+app.put('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = req.params.id;
   const { name, email, phone, username, is_active } = req.body;
 
@@ -1462,7 +1512,7 @@ app.put('/api/admin/sales-reps/:id', authenticate, authorize('manager'), async (
 
 // Remove outlet from sales rep (update status menjadi Missed dan deactivate outlet_assignment)
 // NOTE: This route must be defined BEFORE the general delete sales rep route
-app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, authorize('admin', 'manager'), requireManagedRep, requireManagedOutlet, async (req, res) => {
   console.log('🗑️ REMOVE OUTLET ROUTE HIT!');
   const repId = parseInt(req.params.id);
   const outletId = parseInt(req.params.outlet_id);
@@ -1537,7 +1587,7 @@ app.delete('/api/admin/sales-reps/:id/remove-outlet/:outlet_id', authenticate, a
 });
 
 // Delete sales rep (soft delete)
-app.delete('/api/admin/sales-reps/:id', authenticate, authorize('manager'), async (req, res) => {
+app.delete('/api/admin/sales-reps/:id', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = req.params.id;
 
   if (!pool) {
@@ -1558,7 +1608,7 @@ app.delete('/api/admin/sales-reps/:id', authenticate, authorize('manager'), asyn
 // =====================================================
 
 // Get outlets assigned to a specific sales rep (only active ones)
-app.get('/api/admin/sales-reps/:id/outlets', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id/outlets', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = parseInt(req.params.id);
 
   if (isNaN(repId)) {
@@ -1641,7 +1691,7 @@ app.get('/api/admin/sales-reps/:id/outlets', authenticate, authorize('admin', 'm
 });
 
 // Get all outlets that are NOT assigned to a specific sales rep
-app.get('/api/admin/sales-reps/:id/available-outlets', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id/available-outlets', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = parseInt(req.params.id);
 
   if (isNaN(repId)) {
@@ -1697,7 +1747,7 @@ app.get('/api/admin/sales-reps/:id/available-outlets', authenticate, authorize('
 });
 
 // Assign outlet to sales rep (create visit plan)
-app.post('/api/admin/sales-reps/:id/assign-outlet', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.post('/api/admin/sales-reps/:id/assign-outlet', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = parseInt(req.params.id);
   const { outlet_id, visit_date, visit_time } = req.body;
 
@@ -1906,6 +1956,10 @@ app.get('/api/outlets', authenticate, async (req, res) => {
   const role = req.user.role;
   const repId = role === 'rep' ? req.user.employee_id : (req.query.rep_id ? parseInt(req.query.rep_id, 10) : null);
 
+  if (role === 'manager' && repId && !(await managerOwnsRep(req.user.employee_id, repId))) {
+    return res.status(403).json({ error: 'Sales rep is not assigned to this manager' });
+  }
+
   if (!pool) {
     let mockOutlets = [
       { outlet_id: 1, outlet_name: "Toko Maju Jaya", address: "Jl. Merdeka No. 123", latitude: -6.2088, longitude: 106.8456, priority: "A", store_type: "Supermarket", outlet_code: "OUT-001" },
@@ -1970,8 +2024,24 @@ app.get('/api/outlets', authenticate, async (req, res) => {
           ORDER BY o.priority ASC, o.outlet_name ASC`;
         params = [repId];
       }
+    } else if (role === 'manager') {
+      query = `
+        SELECT DISTINCT o.outlet_id, o.outlet_name, o.address, o.latitude, o.longitude,
+               o.priority, o.store_type, o.outlet_code, o.owner_name, o.phone, o.credit_limit,
+               0 as rep_outstanding
+        FROM outlet o
+        WHERE o.is_active = true AND (
+          o.created_by = $1 OR EXISTS (
+            SELECT 1 FROM outlet_assignment oa
+            JOIN team_member tm ON tm.employee_id = oa.employee_id
+            JOIN team t ON t.team_id = tm.team_id
+            WHERE oa.outlet_id = o.outlet_id AND oa.is_active = TRUE AND t.manager_id = $1
+          )
+        )
+        ORDER BY o.priority ASC, o.outlet_name ASC`;
+      params = [req.user.employee_id];
     } else {
-      // For admin/manager without rep_id, show ALL active outlets
+      // Admin without rep_id can see all active outlets.
       query = `
         SELECT o.outlet_id, o.outlet_name, o.address, o.latitude, o.longitude,
                o.priority, o.store_type, o.outlet_code, o.owner_name, o.phone, o.credit_limit,
@@ -2014,7 +2084,7 @@ app.post('/api/outlets', authenticate, authorize('admin', 'manager'), async (req
   }
 });
 
-app.put('/api/outlets/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.put('/api/outlets/:id', authenticate, authorize('admin', 'manager'), requireManagedOutlet, async (req, res) => {
   const { outlet_name, address, latitude, longitude, owner_name, phone, credit_limit, priority, store_type } = req.body;
   if (!outlet_name || !address || (phone && !validatePhone(phone)) ||
       Number(credit_limit || 0) < 0 || !['A', 'B', 'C'].includes(priority)) {
@@ -2033,7 +2103,7 @@ app.put('/api/outlets/:id', authenticate, authorize('admin', 'manager'), async (
   }
 });
 
-app.delete('/api/outlets/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.delete('/api/outlets/:id', authenticate, authorize('admin', 'manager'), requireManagedOutlet, async (req, res) => {
   const outletId = parseInt(req.params.id, 10);
   const force = req.query.force === 'true'; // Force delete option
   
@@ -2206,7 +2276,7 @@ app.post('/api/admin/outlets/upload-excel', authenticate, authorize('admin', 'ma
 });
 
 // Upload Excel untuk outlet assignment ke sales rep tertentu
-app.post('/api/admin/sales-reps/:id/outlets/upload-excel', authenticate, authorize('admin', 'manager'), upload.single('file'), async (req, res) => {
+app.post('/api/admin/sales-reps/:id/outlets/upload-excel', authenticate, authorize('admin', 'manager'), requireManagedRep, upload.single('file'), async (req, res) => {
   const repId = parseInt(req.params.id);
   console.log(`📤 Outlet Excel upload request for rep ${repId}`);
   
@@ -2802,7 +2872,7 @@ app.post('/api/stock/refresh', authenticate, async (req, res) => {
 });
 
 // Download template Excel untuk sales rep tertentu
-app.get('/api/admin/sales-reps/:id/stock/download-template', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/admin/sales-reps/:id/stock/download-template', authenticate, authorize('admin', 'manager'), requireManagedRep, async (req, res) => {
   const repId = req.params.id;
   console.log(`📥 Download template Excel for rep ${repId}`);
   
@@ -2848,7 +2918,7 @@ app.get('/api/admin/sales-reps/:id/stock/download-template', authenticate, autho
 });
 
 // Upload Excel untuk sales rep tertentu
-app.post('/api/admin/sales-reps/:id/stock/upload-excel', authenticate, authorize('admin', 'manager'), upload.single('file'), async (req, res) => {
+app.post('/api/admin/sales-reps/:id/stock/upload-excel', authenticate, authorize('admin', 'manager'), requireManagedRep, upload.single('file'), async (req, res) => {
   const repId = req.params.id;
   console.log(`📤 Excel upload request for rep ${repId}`);
   console.log(`📁 File info:`, req.file ? {
@@ -4322,7 +4392,8 @@ app.get('/api/notifications/unread-count', authenticate, async (req, res) => {
 // =====================================================
 
 // Generate Sales Report
-app.get('/api/reports/sales', authenticate, authorize('admin', 'manager'), async (req, res) => {
+// Aggregated reports are admin-only until every report query is team-scoped.
+app.get('/api/reports/sales', authenticate, authorize('admin'), async (req, res) => {
   const { start_date, end_date, rep_id } = req.query;
   
   if (!pool) {
@@ -4471,7 +4542,7 @@ app.get('/api/reports/sales', authenticate, authorize('admin', 'manager'), async
 });
 
 // Generate Visit Report
-app.get('/api/reports/visits', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/reports/visits', authenticate, authorize('admin'), async (req, res) => {
   const { start_date, end_date, rep_id } = req.query;
   
   if (!pool) {
@@ -4586,7 +4657,7 @@ app.get('/api/reports/visits', authenticate, authorize('admin', 'manager'), asyn
 });
 
 // Generate Performance Report
-app.get('/api/reports/performance', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/reports/performance', authenticate, authorize('admin'), async (req, res) => {
   const { start_date, end_date, rep_id } = req.query;
   
   if (!pool) {
@@ -4663,7 +4734,7 @@ app.get('/api/reports/performance', authenticate, authorize('admin', 'manager'),
 
 // Download report as an Excel workbook or a portable PDF document.
 // The endpoint deliberately uses the same role permissions as the on-screen reports.
-app.get('/api/reports/:type/download', authenticate, authorize('admin', 'manager'), async (req, res) => {
+app.get('/api/reports/:type/download', authenticate, authorize('admin'), async (req, res) => {
   const type = req.params.type.toLowerCase();
   const format = (req.query.format || 'xlsx').toLowerCase();
   const { start_date, end_date } = req.query;
@@ -4738,6 +4809,52 @@ function sendReportDownload(res, { title, period, rows, format }) {
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${title.replace(/\\s+/g, '_')}_${dateStamp}.pdf"`);
   return res.send(Buffer.from(pdf, 'utf8'));
+}
+
+/** Manager may only operate on sales reps assigned to their own team. */
+async function managerOwnsRep(managerId, repId) {
+  if (!pool) return [3, 4].includes(Number(repId));
+  const result = await pool.query(
+    `SELECT 1
+     FROM team_member tm
+     JOIN team t ON t.team_id = tm.team_id
+     JOIN user_account u ON u.employee_id = tm.employee_id
+     WHERE t.manager_id = $1 AND tm.employee_id = $2 AND u.role = 'rep'`,
+    [managerId, repId]
+  );
+  return result.rowCount > 0;
+}
+
+/** Apply this to endpoints with :id representing a sales rep. */
+async function requireManagedRep(req, res, next) {
+  if (req.user.role !== 'manager') return next();
+  const repId = Number(req.params.id);
+  if (!Number.isInteger(repId) || !(await managerOwnsRep(req.user.employee_id, repId))) {
+    return res.status(403).json({ error: 'Sales rep is not assigned to this manager' });
+  }
+  next();
+}
+
+/** A manager can edit a shop only when it is assigned to one of their sales reps. */
+async function requireManagedOutlet(req, res, next) {
+  if (req.user.role !== 'manager') return next();
+  const outletId = Number(req.params.outlet_id || req.body.outlet_id || req.params.id);
+  if (!Number.isInteger(outletId)) return res.status(400).json({ error: 'Invalid outlet ID' });
+  if (!pool) return next();
+  const result = await pool.query(
+    `SELECT 1 FROM outlet o
+     WHERE o.outlet_id = $1 AND (
+       o.created_by = $2 OR EXISTS (
+         SELECT 1 FROM outlet_assignment oa
+         JOIN team_member tm ON tm.employee_id = oa.employee_id
+         JOIN team t ON t.team_id = tm.team_id
+         WHERE oa.outlet_id = o.outlet_id AND oa.is_active = TRUE AND t.manager_id = $2
+       )
+     )`,
+    [outletId, req.user.employee_id]
+  );
+  if (result.rowCount === 0) return res.status(403).json({ error: 'Outlet is not assigned to this manager' });
+  next();
 }
 
 // 404 harus didaftarkan setelah seluruh route, termasuk notifikasi dan laporan.

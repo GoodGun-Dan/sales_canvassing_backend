@@ -48,8 +48,52 @@ try {
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
+// Google API key tetap di server agar tidak bisa diekstrak dari APK/web app.
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+
 // Trust proxy for Railway (reverse proxy) - only trust loopback addresses
 app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
+
+// Search an address and return coordinates from Google Maps Geocoding API.
+// This route is intentionally protected because it consumes the project's quota.
+app.get('/api/locations/geocode', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  const address = typeof req.query.address === 'string' ? req.query.address.trim() : '';
+  if (address.length < 3) {
+    return res.status(400).json({ error: 'Alamat minimal 3 karakter' });
+  }
+  if (!GOOGLE_MAPS_API_KEY) {
+    return res.status(503).json({ error: 'Google Maps belum dikonfigurasi di server' });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const url = new URL('https://maps.googleapis.com/maps/api/geocode/json');
+    url.searchParams.set('address', address);
+    url.searchParams.set('region', 'id');
+    url.searchParams.set('key', GOOGLE_MAPS_API_KEY);
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Google Maps returned HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    if (payload.status !== 'OK' && payload.status !== 'ZERO_RESULTS') {
+      console.error('Google Maps geocoding error:', payload.status, payload.error_message || '');
+      return res.status(502).json({ error: 'Google Maps tidak dapat mencari alamat saat ini' });
+    }
+    const results = (payload.results || []).slice(0, 5).map((result) => ({
+      address: result.formatted_address,
+      latitude: result.geometry.location.lat,
+      longitude: result.geometry.location.lng,
+    }));
+    res.json({ results });
+  } catch (err) {
+    console.error('Google Maps geocoding request failed:', err.message);
+    res.status(502).json({ error: 'Gagal menghubungi Google Maps' });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
 
 // =====================================================
 // 24-HOUR AUTO-REMOVAL SCHEDULED TASK
